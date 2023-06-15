@@ -1,2 +1,2 @@
 # Mikan_UE
- Unreal Engine plugin for MikanCR
+ Unreal Engine plugin for MikanXR
