@@ -1,0 +1,30 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "MikanXR_UE",
+	"Description": "Plugin for MikanXR compositing tool",
+	"Category": "Others",
+	"CreatedBy": "Brendan Walker",
+	"CreatedByURL": "https://github.com/brendanwalker/MikanXR_UE",
+	"DocsURL": "https://github.com/brendanwalker/MikanXR_UE",
+	"MarketplaceURL": "",
+	"EngineVersion": "4.27.0",
+	"SupportURL": "mailto:brendan@millerwalker.com",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "MikanXR_UE",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "MikanXR_UEEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PreDefault"
+		}
+	]
+}
