@@ -14,6 +14,14 @@ UMikanCaptureComponent::UMikanCaptureComponent(const FObjectInitializer& ObjectI
 	bWantsInitializeComponent = true;
 	bCaptureEveryFrame= false; // Wait for CaptureFrame call from Mikan
 
+	// Rendering defaults for transparent background and opt-in actors
+	PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
+	CaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
+	PostProcessBlendWeight = 0.0f;
+	ShowFlags.SetAtmosphere(false);
+	ShowFlags.SetFog(false);
+	bConsiderUnrenderedOpaquePixelAsFullyTranslucent = true;
+
 	this->SetRelativeScale3D(FVector(1.f));
 	this->SetRelativeLocation(FVector::ZeroVector);
 }
@@ -65,8 +73,6 @@ void UMikanCaptureComponent::CaptureFrame(uint64 NewFrameIndex)
 							if (NativeTexturePtr != nullptr)
 							{
 								Mikan_PublishRenderTargetTexture(NativeTexturePtr, NewFrameIndex);
-								//g_pImmediateContext->CopyResource(targetTex, baseTexture);
-								//g_pImmediateContext->Flush();
 							}
 						}
 					}

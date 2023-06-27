@@ -66,6 +66,7 @@ typedef enum
 	MikanResult_TooManyStencils = -19,
 	MikanResult_InvalidAPI = -20,
 	MikanResult_SharedTextureError = -21,
+	MikanResult_InvalidAnchorID = -22,
 } MikanResult;
 
 typedef enum
@@ -310,7 +311,6 @@ typedef struct
 /// Static properties 
 typedef struct
 {
-	MikanSpatialAnchorID parent_anchor_id;
 	MikanVRDeviceID attached_vr_device_id;
 	MikanMatrix4f vr_device_offset_xform;
 	float camera_scale;
@@ -350,7 +350,7 @@ typedef struct
 typedef struct
 {
 	MikanSpatialAnchorID anchor_id;
-	MikanTransform relative_transform; // transform relative to origin anchor (for origin anchor, this is a world transform)
+	MikanTransform world_transform; // Transform in tracking system space
 	char anchor_name[MAX_MIKAN_ANCHOR_NAME_LEN];
 } MikanSpatialAnchorInfo;
 

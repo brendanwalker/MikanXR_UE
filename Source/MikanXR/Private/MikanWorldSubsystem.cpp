@@ -4,6 +4,7 @@
 #include "MikanClient_CAPI.h"
 #include "MikanMath.h"
 #include "MikanCamera.h"
+#include "MikanScene.h"
 #include "IMikanXRModule.h"
 
 // -- UMikanWorldSubsystem -----
@@ -45,47 +46,40 @@ void UMikanWorldSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
-void UMikanWorldSubsystem::RegisterAnchor(UMikanAnchorComponent* InAnchor)
+void UMikanWorldSubsystem::BindMikanScene(class AMikanScene* InScene)
 {
-	Anchors.AddUnique(InAnchor);
-	UpdateCameraAttachment();
+	MikanScene= InScene;
 }
 
-void UMikanWorldSubsystem::UnregisterAnchor(UMikanAnchorComponent* InAnchor)
+void UMikanWorldSubsystem::UnbindMikanScene(class AMikanScene* InScene)
 {
-	Anchors.Remove(InAnchor);
-	UpdateCameraAttachment();
-}
-
-void UMikanWorldSubsystem::BindMikanCamera(class AMikanCamera* InCamera)
-{
-	if (InCamera != nullptr && MikanCamera != InCamera)
+	if (MikanScene == InScene)
 	{
-		MikanCamera = InCamera;
-		ReallocateRenderBuffers();
-		UpdateCameraProperties();
-	}
-}
-
-void UMikanWorldSubsystem::UnbindCamera(class AMikanCamera* InCamera)
-{
-	if (InCamera == MikanCamera)
-	{
-		MikanCamera= nullptr;
+		MikanScene= InScene;
 	}
 }
 
 void UMikanWorldSubsystem::HandleMikanConnected()
 {
 	ReallocateRenderBuffers();
-	UpdateCameraProperties();
-	HandleVideoSourceAttachmentChanged();
+
+	if (MikanScene != nullptr)
+	{
+		MikanScene->HandleMikanConnected();
+	}
 
 	OnMikanConnected.Broadcast();
 }
 
 void UMikanWorldSubsystem::HandleMikanDisconnected()
 {
+	FreeRenderBuffers();
+
+	if (MikanScene != nullptr)
+	{
+		MikanScene->HandleMikanDisconnected();
+	}
+
 	OnMikanDisconnected.Broadcast();
 }
 
@@ -104,20 +98,20 @@ void UMikanWorldSubsystem::HandleMikanEvent(MikanEvent* event)
 		// Video Source Events
 		case MikanEvent_videoSourceOpened:
 			ReallocateRenderBuffers();
-			UpdateCameraProperties();
+			HandleCameraIntrinsicsChanged();
 			break;
 		case MikanEvent_videoSourceClosed:
 			break;
 		case MikanEvent_videoSourceNewFrame:
-			ProcessNewVideoSourceFrame(event->event_payload.video_source_new_frame);
+			HandleNewVideoSourceFrame(event->event_payload.video_source_new_frame);
 			break;
 		case MikanEvent_videoSourceAttachmentChanged:
-			HandleVideoSourceAttachmentChanged();
+			HandleCameraAttachmentChanged();
 			break;
 		case MikanEvent_videoSourceModeChanged:
 		case MikanEvent_videoSourceIntrinsicsChanged:
 			ReallocateRenderBuffers();
-			UpdateCameraProperties();
+			HandleCameraIntrinsicsChanged();
 			break;
 
 		// VR Device Events
@@ -128,57 +122,23 @@ void UMikanWorldSubsystem::HandleMikanEvent(MikanEvent* event)
 
 		// Spatial Anchor Events
 		case MikanEvent_anchorPoseUpdated:
-			UpdateAnchorPose(event->event_payload.anchor_pose_updated);
+			HandleAnchorPoseChanged(event->event_payload.anchor_pose_updated);
 			break;
 		case MikanEvent_anchorListUpdated:
+			HandleAnchorListChanged();
 			break;
 	}
 }
 
-void UMikanWorldSubsystem::UpdateAnchorPose(const MikanAnchorPoseUpdateEvent& AnchorPoseEvent)
+void UMikanWorldSubsystem::FreeRenderBuffers()
 {
-	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
-
-	for (UMikanAnchorComponent* Anchor : Anchors)
+	if (MikanScene != nullptr)
 	{
-		if (Anchor->GetAnchorId() == AnchorPoseEvent.anchor_id)
+		AMikanCamera* MikanCamera = MikanScene->GetMikanCamera();
+		if (MikanCamera != nullptr)
 		{
-			FTransform RelativeTransform=
-				FMikanMath::MikanTransformToFTransform(AnchorPoseEvent.transform, MetersToUU);
-
-			Anchor->SetRelativeTransform(RelativeTransform);
+			MikanCamera->DisposeRenderTarget();
 		}
-	}
-}
-
-void UMikanWorldSubsystem::ProcessNewVideoSourceFrame(const MikanVideoSourceNewFrameEvent& newFrameEvent)
-{
-	if (MikanCamera)
-	{
-		// Apply the camera pose received
-		const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
-		FVector cameraForward = FMikanMath::MikanVector3fToFVector(newFrameEvent.cameraForward);
-		FVector cameraUp = FMikanMath::MikanVector3fToFVector(newFrameEvent.cameraUp);
-		FQuat cameraQuat = FRotationMatrix::MakeFromXZ(cameraForward, cameraUp).ToQuat();
-		FVector cameraPosition = FMikanMath::MikanVector3fToFVector(newFrameEvent.cameraPosition) * MikanCameraScale * MetersToUU;
-		FTransform cameraTransform(cameraQuat, cameraPosition);
-
-		MikanCamera->SetActorRelativeTransform(cameraTransform);
-
-		// Render out a new frame
-		MikanCamera->MikanCaptureComponent->CaptureFrame(newFrameEvent.frame);
-
-		// Remember the frame index of the last frame we published
-		LastReceivedVideoSourceFrame = newFrameEvent.frame;
-	}
-
-}
-
-void UMikanWorldSubsystem::FreeFrameBuffer()
-{
-	if (MikanCamera != nullptr)
-	{
-		MikanCamera->DisposeRenderTarget();
 	}
 
 	Mikan_FreeRenderTargetBuffers();
@@ -187,9 +147,11 @@ void UMikanWorldSubsystem::FreeFrameBuffer()
 
 void UMikanWorldSubsystem::ReallocateRenderBuffers()
 {
-	FreeFrameBuffer();
+	// Clean up any previously allocated render targets
+	FreeRenderBuffers();
 
-	MikanVideoSourceMode VideoMode= {};
+	// Fetch the video source information from Mikan
+	MikanVideoSourceMode VideoMode = {};
 	if (Mikan_GetVideoSourceMode(&VideoMode) == MikanResult_Success)
 	{
 		MikanRenderTargetDescriptor RTDdesc = {};
@@ -200,58 +162,58 @@ void UMikanWorldSubsystem::ReallocateRenderBuffers()
 		RTDdesc.depth_buffer_type = MikanDepthBuffer_NODEPTH;
 		RTDdesc.graphicsAPI = ClientInfo.graphicsAPI;
 
+		// Allocate any behind the scenes shared memory
 		Mikan_AllocateRenderTargetBuffers(&RTDdesc, &RenderTargetMemory);
 
-		if (MikanCamera != nullptr)
+		// Tell the active scene camera to recreate a matching render target
+		if (MikanScene != nullptr)
 		{
-			MikanCamera->RecreateRenderTarget(RTDdesc);
-		}
-	}
-}
+			AMikanCamera* MikanCamera = MikanScene->GetMikanCamera();
 
-void UMikanWorldSubsystem::UpdateCameraProperties()
-{
-	MikanVideoSourceIntrinsics VideoIntrinsics;
-	if (MikanCamera != nullptr &&
-		Mikan_GetVideoSourceIntrinsics(&VideoIntrinsics) == MikanResult_Success)
-	{
-		MikanMonoIntrinsics MonoIntrinsics = VideoIntrinsics.intrinsics.mono;
-
-		MikanCamera->SetCameraFOV((float)MonoIntrinsics.vfov);
-	}
-}
-
-void UMikanWorldSubsystem::HandleVideoSourceAttachmentChanged()
-{
-	MikanVideoSourceAttachmentInfo AttachInfo;
-	if (Mikan_GetVideoSourceAttachment(&AttachInfo) == MikanResult_Success)
-	{
-		CameraParentAnchorId= AttachInfo.parent_anchor_id;
-		MikanCameraScale= AttachInfo.camera_scale;
-		UpdateCameraAttachment();
-	}
-}
-
-void UMikanWorldSubsystem::UpdateCameraAttachment()
-{
-	if (MikanCamera != nullptr)
-	{
-		AActor* CameraParentAnchor= MikanCamera->GetAttachParentActor();
-
-		for (UMikanAnchorComponent* Anchor : Anchors)
-		{
-			if (Anchor->GetAnchorId() == CameraParentAnchorId)
+			if (MikanCamera != nullptr)
 			{
-				AActor* NewCameraParentActor = Anchor->GetOwner();
-
-				if (NewCameraParentActor != CameraParentAnchor)
-				{
-					MikanCamera->AttachToActor(
-						NewCameraParentActor,
-						FAttachmentTransformRules(EAttachmentRule::SnapToTarget, false));
-					break;
-				}
+				MikanCamera->RecreateRenderTarget(RTDdesc);
 			}
 		}
+	}
+}
+
+void UMikanWorldSubsystem::HandleAnchorListChanged()
+{
+	if (MikanScene != nullptr)
+	{
+		MikanScene->HandleAnchorListChanged();
+	}
+}
+
+void UMikanWorldSubsystem::HandleAnchorPoseChanged(const MikanAnchorPoseUpdateEvent& AnchorPoseEvent)
+{
+	if (MikanScene != nullptr)
+	{
+		MikanScene->HandleAnchorPoseChanged(AnchorPoseEvent);
+	}
+}
+
+void UMikanWorldSubsystem::HandleNewVideoSourceFrame(const MikanVideoSourceNewFrameEvent& newFrameEvent)
+{
+	if (MikanScene)
+	{
+		MikanScene->HandleNewVideoSourceFrame(newFrameEvent);
+	}
+}
+
+void UMikanWorldSubsystem::HandleCameraIntrinsicsChanged()
+{
+	if (MikanScene != nullptr)
+	{
+		MikanScene->HandleCameraIntrinsicsChanged();
+	}
+}
+
+void UMikanWorldSubsystem::HandleCameraAttachmentChanged()
+{
+	if (MikanScene != nullptr)
+	{
+		MikanScene->HandleCameraAttachmentChanged();
 	}
 }

@@ -12,17 +12,8 @@ class MIKANXR_API AMikanCamera : public AActor
 public:
 	AMikanCamera(const FObjectInitializer& ObjectInitializer);
 
-	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds ) override;
-
-	void RecreateRenderTarget(const MikanRenderTargetDescriptor& InRTDdesc);
-	void DisposeRenderTarget();
-
-	void SetCameraFOV(float FOVDegrees);
-
-	UFUNCTION(BlueprintNativeEvent)
-	void RebuildHiddenActorList();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Components")
 	class UMikanCaptureComponent* MikanCaptureComponent;
@@ -30,6 +21,14 @@ public:
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Components")
 	class UTextureRenderTarget2D* RenderTarget;
 
+	void HandleCameraIntrinsicsChanged();
+
+	void RecreateRenderTarget(const MikanRenderTargetDescriptor& InRTDdesc);
+	void DisposeRenderTarget();
+
 protected:
+	MikanSpatialAnchorID CameraParentAnchorId = INVALID_MIKAN_ID;
+	float MikanCameraScale = 1.f;
 	MikanRenderTargetDescriptor RTDdesc;
+	uint64 LastReceivedVideoSourceFrame;
 };

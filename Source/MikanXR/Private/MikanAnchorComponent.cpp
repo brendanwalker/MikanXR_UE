@@ -1,58 +1,66 @@
 #include "MikanAnchorComponent.h"
-#include "MikanWorldSubsystem.h"
-#include "MikanClient_CAPI.h"
-#include "MikanMath.h"
+#include "MikanScene.h"
 
 UMikanAnchorComponent::UMikanAnchorComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.bStartWithTickEnabled = true;
-	PrimaryComponentTick.TickGroup = TG_PrePhysics;
-
-	this->SetRelativeScale3D(FVector(1.f));
-	this->SetRelativeLocation(FVector::ZeroVector);
 }
 
-void UMikanAnchorComponent::BeginPlay()
+AMikanScene* UMikanAnchorComponent::GetParentScene() const
 {
-	Super::BeginPlay();
+	USceneComponent* AttachParentComponent= GetAttachParent();
 
-	auto* MikanWorldSubsystem= UMikanWorldSubsystem::GetInstance(GetWorld());
-	MikanWorldSubsystem->RegisterAnchor(this);
-	MikanWorldSubsystem->OnMikanConnected.AddDynamic(this, &UMikanAnchorComponent::NotifyMikanConnected);
-
-	FindAnchorInfo();
-}
-
-void UMikanAnchorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
-	MikanWorldSubsystem->UnregisterAnchor(this);
-	MikanWorldSubsystem->OnMikanConnected.RemoveDynamic(this, &UMikanAnchorComponent::NotifyMikanConnected);
-
-	Super::EndPlay(EndPlayReason);
-}
-
-void UMikanAnchorComponent::NotifyMikanConnected()
-{
-	FindAnchorInfo();
-}
-
-void UMikanAnchorComponent::FindAnchorInfo()
-{
-	if (Mikan_GetIsConnected())
+	if (AttachParentComponent != nullptr)
 	{
-		MikanSpatialAnchorInfo AnchorInfo;
-		if (Mikan_FindSpatialAnchorInfoByName(TCHAR_TO_ANSI(*AnchorName), &AnchorInfo) == MikanResult_Success)
-		{
-			const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
-			const FTransform RelativeTransform =
-				FMikanMath::MikanTransformToFTransform(
-					AnchorInfo.relative_transform, MetersToUU);
+		return Cast<AMikanScene>(AttachParentComponent->GetOwner());
+	}
 
-			AnchorId= AnchorInfo.anchor_id;
-			SetRelativeTransform(RelativeTransform);
+	return nullptr;
+}
+
+void UMikanAnchorComponent::FetchAnchorInfo()
+{
+	AMikanScene* OwnerScene= GetParentScene();
+
+	if (OwnerScene != nullptr)
+	{
+		const FMikanAnchorInfo* MikanAnchorInfo= OwnerScene->GetMikanAnchorInfoByName(AnchorName);
+
+		if (MikanAnchorInfo != nullptr)
+		{
+			AnchorId= MikanAnchorInfo->AnchorID;
+
+			// Update our scene transform now that we have an assigned anchor id
+			UpdateSceneTransform();
+		}
+	}
+}
+
+void UMikanAnchorComponent::UpdateSceneTransform()
+{
+	if (AnchorId != INVALID_MIKAN_ID)
+	{
+		AMikanScene* OwnerScene = GetParentScene();
+
+		if (OwnerScene != nullptr)
+		{
+			// Get the corresponding mikan anchor info from the scene
+			const FMikanAnchorInfo* MikanAnchorInfo = OwnerScene->GetMikanAnchorInfoById(AnchorId);
+
+			if (MikanAnchorInfo != nullptr)
+			{
+				// Get the anchor transform in Mikan Space
+				const FTransform& MikanSpaceTransform= MikanAnchorInfo->MikanSpaceTransform;
+
+				// Get the conversion from the scene to go from Mikan to Scene space
+				const FTransform& MikanToSceneXform = OwnerScene->GetMikanToSceneTransform();
+
+				// Compute the Scene space transform
+				const FTransform SceneSpaceTransform= MikanSpaceTransform * MikanToSceneXform;
+
+				// Update the anchor scene componetn transform
+				SetRelativeTransform(SceneSpaceTransform);
+			}
 		}
 	}
 }

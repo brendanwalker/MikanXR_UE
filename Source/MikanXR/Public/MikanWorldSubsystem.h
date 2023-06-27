@@ -20,41 +20,32 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	void RegisterAnchor(class UMikanAnchorComponent* InAnchor);
-	void UnregisterAnchor(class UMikanAnchorComponent* InAnchor);
-
-	void BindMikanCamera(class AMikanCamera* InCamera);
-	void UnbindCamera(class AMikanCamera* InCamera);
+	void BindMikanScene(class AMikanScene* InScene);
+	void UnbindMikanScene(class AMikanScene* InScene);
 
 	void HandleMikanEvent(MikanEvent* event);
 
-	void HandleMikanConnected();
 	UPROPERTY(BlueprintAssignable)
 	FMikanWorldEvent OnMikanConnected;
 
-	void HandleMikanDisconnected();
 	UPROPERTY(BlueprintAssignable)
 	FMikanWorldEvent OnMikanDisconnected;
 
-
 protected:
-	void UpdateAnchorPose(const MikanAnchorPoseUpdateEvent& AnchorPoseEvent);
-	void ProcessNewVideoSourceFrame(const MikanVideoSourceNewFrameEvent& newFrameEvent);
-	void FreeFrameBuffer();
+	void FreeRenderBuffers();
 	void ReallocateRenderBuffers();
-	void UpdateCameraProperties();
-	void HandleVideoSourceAttachmentChanged();
-	void UpdateCameraAttachment();
+
+	void HandleMikanConnected();
+	void HandleMikanDisconnected();
+	void HandleAnchorListChanged();
+	void HandleAnchorPoseChanged(const MikanAnchorPoseUpdateEvent& AnchorPoseEvent);
+	void HandleNewVideoSourceFrame(const MikanVideoSourceNewFrameEvent& newFrameEvent);
+	void HandleCameraIntrinsicsChanged();
+	void HandleCameraAttachmentChanged();
 
 	UPROPERTY(Transient)
-	TArray<class UMikanAnchorComponent*> Anchors;
+	class AMikanScene* MikanScene;
 
-	UPROPERTY(Transient)
-	class AMikanCamera* MikanCamera;
-
-	MikanSpatialAnchorID CameraParentAnchorId= INVALID_MIKAN_ID;
-	float MikanCameraScale= 1.f;
 	MikanClientInfo ClientInfo;
 	MikanRenderTargetMemory RenderTargetMemory;
-	uint64 LastReceivedVideoSourceFrame;
 };

@@ -13,18 +13,17 @@ class MIKANXR_API UMikanAnchorComponent : public USceneComponent
 public:
 	UMikanAnchorComponent(const FObjectInitializer& ObjectInitializer);
 
-	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FString AnchorName;
+
+	UFUNCTION(BlueprintPure)
+	class AMikanScene* GetParentScene() const;
+
+	void FetchAnchorInfo();
+	void UpdateSceneTransform();
 
 	MikanSpatialAnchorID GetAnchorId() const { return AnchorId; }
 
 protected:
-	UFUNCTION()
-	void NotifyMikanConnected();
-	void FindAnchorInfo();
-
 	MikanSpatialAnchorID AnchorId= INVALID_MIKAN_ID;
 };
