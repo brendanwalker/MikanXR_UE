@@ -45,6 +45,8 @@ public class MikanXR : ModuleRules
 
 	public MikanXR(ReadOnlyTargetRules Target) : base(Target)
 	{
+		// Enable RTTI for Mikan Events
+		bUseRTTI = true;
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		PrivateIncludePaths.Add("MikanXR/Private");
@@ -64,7 +66,8 @@ public class MikanXR : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"RHI",
-				"RenderCore"
+				"RenderCore",
+				"ProceduralMeshComponent"
 			}
 		);
 
@@ -78,13 +81,25 @@ public class MikanXR : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			// Add the import library
-			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "Mikan_CAPI.lib"));
+			// Add the import libraries
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanAPI.lib"));
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanCore.lib"));
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanSerialization.lib"));
 
-			// Copy Mikan CAPI to project binaries dir
-			string MikanDLLPath = Path.Combine(BinariesPath, PlatformString, "Mikan_CAPI.dll");
-			string MikanProjectDLLPath = CopyToProjectBinaries(MikanDLLPath, Target);
-			System.Console.WriteLine("Using Mikan_CAPI DLL: " + MikanProjectDLLPath);
+			// Copy MikanCore to project binaries dir
+			string MikanCoreDLLPath = Path.Combine(BinariesPath, PlatformString, "MikanCore.dll");
+			string MikanProjectCoreDLLPath = CopyToProjectBinaries(MikanCoreDLLPath, Target);
+			System.Console.WriteLine("Using MikanCore DLL: " + MikanProjectCoreDLLPath);
+
+			// Copy MikanAPI to project binaries dir
+			string MikanApiDLLPath = Path.Combine(BinariesPath, PlatformString, "MikanAPI.dll");
+			string MikanProjectApiDLLPath = CopyToProjectBinaries(MikanApiDLLPath, Target);
+			System.Console.WriteLine("Using MikanAPI DLL: " + MikanProjectApiDLLPath);
+
+			// Copy MikanSerialization to project binaries dir
+			string MikanSerializationDLLPath = Path.Combine(BinariesPath, PlatformString, "MikanSerialization.dll");
+			string MikanProjectSerializationDLLPath = CopyToProjectBinaries(MikanSerializationDLLPath, Target);
+			System.Console.WriteLine("Using MikanSerialization DLL: " + MikanProjectSerializationDLLPath);
 
 			// Copy Spout to project binaries dir
 			string SpoutDLLPath = Path.Combine(BinariesPath, PlatformString, "SpoutLibrary.dll");
@@ -92,7 +107,9 @@ public class MikanXR : ModuleRules
 			System.Console.WriteLine("Using Spout DLL: " + SpoutProjectDLLPath);
 
 			// Ensure that the DLL is staged along with the executable
-			RuntimeDependencies.Add(MikanProjectDLLPath);
+			RuntimeDependencies.Add(MikanProjectCoreDLLPath);
+			RuntimeDependencies.Add(MikanProjectApiDLLPath);
+			RuntimeDependencies.Add(MikanProjectSerializationDLLPath);
 			RuntimeDependencies.Add(SpoutProjectDLLPath);
 
 			isLibrarySupported = true;
@@ -119,13 +136,13 @@ public class MikanXR : ModuleRules
 		string FullExistingPath = Path.Combine(FullBinariesDir, Filename);
 		bool ValidFile = false;
 
-		//File exists, check if they're the same
+		//File exists, delete it in case it's outdated
 		if (File.Exists(FullExistingPath))
 		{
-			ValidFile = true;
+			File.Delete(FullExistingPath);
 		}
 
-		//No valid existing file found, copy new dll
+		// Copy new dll
 		if (!ValidFile)
 		{
 			File.Copy(Filepath, Path.Combine(FullBinariesDir, Filename), true);

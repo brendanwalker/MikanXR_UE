@@ -11,6 +11,7 @@ del "%~dp0ThirdParty\MikanXR\include\*.h"
 echo "Copy Mikan DLLs"
 copy "%MIKAN_DIST_PATH%\MikanAPI.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 copy "%MIKAN_DIST_PATH%\MikanCore.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
+copy "%MIKAN_DIST_PATH%\MikanSerialization.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 copy "%MIKAN_DIST_PATH%\SpoutLibrary.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 IF %ERRORLEVEL% NEQ 0 (
   echo "Error copying DLLs"
@@ -27,6 +28,7 @@ IF %ERRORLEVEL% NEQ 0 (
 echo "Copy Mikan Libs"
 copy "%MIKAN_DIST_PATH%\lib\MikanAPI.lib" "%~dp0ThirdParty\MikanXR\lib\win64\MikanAPI.lib"
 copy "%MIKAN_DIST_PATH%\lib\MikanCore.lib" "%~dp0ThirdParty\MikanXR\lib\win64\MikanCore.lib"
+copy "%MIKAN_DIST_PATH%\lib\MikanSerialization.lib" "%~dp0ThirdParty\MikanXR\lib\win64\MikanSerialization.lib"
 IF %ERRORLEVEL% NEQ 0 (
   echo "Error copying libs"
   goto failure
