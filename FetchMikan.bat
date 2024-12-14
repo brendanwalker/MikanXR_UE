@@ -12,6 +12,7 @@ echo "Copy Mikan DLLs"
 copy "%MIKAN_DIST_PATH%\MikanAPI.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 copy "%MIKAN_DIST_PATH%\MikanCore.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 copy "%MIKAN_DIST_PATH%\MikanSerialization.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
+copy "%MIKAN_DIST_PATH%\Refureku.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 copy "%MIKAN_DIST_PATH%\SpoutLibrary.dll" "%~dp0ThirdParty\MikanXR\bin\win64"
 IF %ERRORLEVEL% NEQ 0 (
   echo "Error copying DLLs"

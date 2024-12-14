@@ -101,6 +101,11 @@ public class MikanXR : ModuleRules
 			string MikanProjectSerializationDLLPath = CopyToProjectBinaries(MikanSerializationDLLPath, Target);
 			System.Console.WriteLine("Using MikanSerialization DLL: " + MikanProjectSerializationDLLPath);
 
+			// Copy Refureku to project binaries dir
+			string RefurekuDLLPath = Path.Combine(BinariesPath, PlatformString, "Refureku.dll");
+			string RefurekuProjectDLLPath = CopyToProjectBinaries(RefurekuDLLPath, Target);
+			System.Console.WriteLine("Using Refureku DLL: " + RefurekuProjectDLLPath);
+
 			// Copy Spout to project binaries dir
 			string SpoutDLLPath = Path.Combine(BinariesPath, PlatformString, "SpoutLibrary.dll");
 			string SpoutProjectDLLPath = CopyToProjectBinaries(SpoutDLLPath, Target);
@@ -110,6 +115,7 @@ public class MikanXR : ModuleRules
 			RuntimeDependencies.Add(MikanProjectCoreDLLPath);
 			RuntimeDependencies.Add(MikanProjectApiDLLPath);
 			RuntimeDependencies.Add(MikanProjectSerializationDLLPath);
+			RuntimeDependencies.Add(RefurekuProjectDLLPath);
 			RuntimeDependencies.Add(SpoutProjectDLLPath);
 
 			isLibrarySupported = true;
