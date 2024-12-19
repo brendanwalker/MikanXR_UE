@@ -112,11 +112,11 @@ public class MikanXR : ModuleRules
 			System.Console.WriteLine("Using Spout DLL: " + SpoutProjectDLLPath);
 
 			// Ensure that the DLL is staged along with the executable
-			RuntimeDependencies.Add(MikanProjectCoreDLLPath);
-			RuntimeDependencies.Add(MikanProjectApiDLLPath);
-			RuntimeDependencies.Add(MikanProjectSerializationDLLPath);
-			RuntimeDependencies.Add(RefurekuProjectDLLPath);
-			RuntimeDependencies.Add(SpoutProjectDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanCore.dll", MikanProjectCoreDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanAPI.dll", MikanProjectApiDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanSerialization.dll", MikanProjectSerializationDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/Refureku.dll", RefurekuProjectDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/SpoutLibrary.dll", SpoutProjectDLLPath);
 
 			isLibrarySupported = true;
 		}

@@ -4,7 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "Components/SceneCaptureComponent2D.h"
-#include "MikanClientTypes.h"
+#include "MikanCoreTypes.h"
+#include "MikanVideoSourceTypes.h"
 #include "MikanCaptureComponent.generated.h"
 
 UCLASS(hidecategories=(Collision, Object, Physics, SceneComponent), ClassGroup=Rendering, editinlinenew, meta=(BlueprintSpawnableComponent))
@@ -20,9 +21,20 @@ public:
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	void SetRenderTargetDesc(const MikanRenderTargetDescriptor& InRTDdesc);
-	void CaptureFrame(uint64 newFrameIndex);
+	void SetVideoSourceIntrinsics(const MikanMonoIntrinsics& InIntrinsics);
+
+	void CaptureFrame(uint64 NewFrameIndex);
+
+	// Mikan UE4 Events
+	UFUNCTION()
+	void HandleMikanRenderableRegistered(class UMikanRenderableComponent* Renderable);
+	UFUNCTION()
+	void HandleMikanRenderableUnregistered(class UMikanRenderableComponent* Renderable);
 
 protected:
-	uint64 LastRenderedFrameIndex= 0;
-	MikanRenderTargetDescriptor RTDdesc;
+	class IMikanAPI* MikanAPI= nullptr;
+	MikanRenderTargetDescriptor RenderTargetDesc;
+	MikanMonoIntrinsics VideoSourceIntrinsics;
+	float NearClippingPlaneUU;
+	float FarClippingPlaneUU;
 };

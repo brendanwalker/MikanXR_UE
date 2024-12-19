@@ -20,7 +20,11 @@ public:
 	void ShutdownModule() override;
 
 	// FGCObject implementation
-	void AddReferencedObjects(FReferenceCollector& Collector) override;
+	void AddReferencedObjects(FReferenceCollector& Collector) override;	
+	FString GetReferencerName() const override
+	{
+		return TEXT("FMikanXREditorModule");
+	}
 
 protected:
 

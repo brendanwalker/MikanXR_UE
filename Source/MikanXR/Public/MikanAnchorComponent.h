@@ -2,10 +2,10 @@
 
 #include "CoreMinimal.h"
 #include "Components/SceneComponent.h"
-#include "MikanClientTypes.h"
+#include "MikanSpatialAnchorTypes.h"
 #include "MikanAnchorComponent.generated.h"
 
-UCLASS(Blueprintable, meta = (BlueprintSpawnableComponent))
+UCLASS(BlueprintType, meta = (BlueprintSpawnableComponent))
 class MIKANXR_API UMikanAnchorComponent : public USceneComponent
 {
 	GENERATED_BODY()
@@ -13,17 +13,21 @@ class MIKANXR_API UMikanAnchorComponent : public USceneComponent
 public:
 	UMikanAnchorComponent(const FObjectInitializer& ObjectInitializer);
 
+	UPROPERTY(BlueprintReadOnly)
+	int32 AnchorId;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FString AnchorName;
 
 	UFUNCTION(BlueprintPure)
 	class AMikanScene* GetParentScene() const;
 
-	void FetchAnchorInfo();
-	void UpdateSceneTransform();
+	void ApplyAnchorInfo(
+		MikanSpatialAnchorID InAnchorId,
+		const MikanTransform& RelativeTransform);
+	void ApplyAnchorTransform(const MikanTransform& RelativeTransform);
 
-	MikanSpatialAnchorID GetAnchorId() const { return AnchorId; }
-
-protected:
-	MikanSpatialAnchorID AnchorId= INVALID_MIKAN_ID;
+#if WITH_EDITOR  
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 };

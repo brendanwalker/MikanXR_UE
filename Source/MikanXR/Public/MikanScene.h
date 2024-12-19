@@ -1,17 +1,10 @@
 #pragma once
 
+#include "MikanAPITypes.h"
 #include "GameFramework/Actor.h"
-#include "MikanClientTypes.h"
 #include "MikanScene.generated.h"
 
-struct FMikanAnchorInfo
-{
-	MikanSpatialAnchorID AnchorID= INVALID_MIKAN_ID;
-	FTransform MikanSpaceTransform; 
-	FString AnchorName;
-};
-
-UCLASS(Blueprintable)
+UCLASS(BlueprintType, Blueprintable)
 class MIKANXR_API AMikanScene : public AActor
 {
 	GENERATED_BODY()
@@ -19,51 +12,86 @@ class MIKANXR_API AMikanScene : public AActor
 public:
 	AMikanScene(const FObjectInitializer& ObjectInitializer);
 
+	virtual void PostRegisterAllComponents() override;
+	virtual void Destroyed() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Components")
 	class USceneComponent* SceneOrigin;
 
-	// The name of the anchor to make everything in the scene relative to
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Components")
-	FString SceneOriginAnchorName;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	TSubclassOf<class AMikanCamera> CameraClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	class UMaterialInterface* ModelStencilMaterial;
 
 	UFUNCTION(BlueprintPure)
 	class AMikanCamera* GetMikanCamera() const { return SceneCamera; }
 
-	UFUNCTION(BlueprintPure)
-	const FTransform& GetMikanToSceneTransform() const { return MikanToSceneTransform; }
+	class IMikanAPI* GetMikanAPI() const { return MikanAPI; }
 
-	FMikanAnchorInfo* GetMikanAnchorInfoById(MikanSpatialAnchorID AnchorId);
-	FMikanAnchorInfo* GetMikanAnchorInfoByName(const FString& AnchorName);
+	class AMikanStencilActor* GetMikanStencilById(MikanStencilID StencilID);
 
+	// Scene Events
+	void HandleSceneActivated();
+	void HandleSceneDeactivated();
+
+	// App Connection Events
+	UFUNCTION(CallInEditor)
 	void HandleMikanConnected();
-	void HandleMikanDisconnected();
+
+	// Spatial Anchor Events
+	UFUNCTION(CallInEditor)
 	void HandleAnchorListChanged();
-	void HandleAnchorPoseChanged(const MikanAnchorPoseUpdateEvent& AnchorPoseEvent);
-	void HandleCameraIntrinsicsChanged();
-	void HandleCameraAttachmentChanged();
-	void HandleNewVideoSourceFrame(const MikanVideoSourceNewFrameEvent& newFrameEvent);
+	UFUNCTION(CallInEditor)
+	void HandleAnchorNameChanged(int32 AnchorID, const FString& AnchorName);
+	UFUNCTION(CallInEditor)
+	void HandleAnchorPoseChanged(int32 AnchorID, const FTransform& SceneTransform);
+
+	// Stencil Events
+	UFUNCTION()
+	void HandleQuadStencilListChanged();
+	UFUNCTION()
+	void HandleBoxStencilListChanged();
+	UFUNCTION()
+	void HandleModelStencilListChanged();
+	UFUNCTION()
+	void HandleStencilNameChanged(int32 StencilID, const FString& StencilName);
+	UFUNCTION()
+	void HandleStencilPoseChanged(int32 StencilID, const FTransform& SceneTransform);
+
+	// Script Message Events
+	UFUNCTION()
+	void HandleScriptMessage(const FString& Message);
+	UFUNCTION(BlueprintImplementableEvent)
+	void OnMikanScriptMessage(const FString& Message);
 
 protected:
-	void RecomputeMikanToSceneTransform();
-	void RebuildSceneAnchorList();
-	void BindSceneCamera();
-
-	// Transform used to convert Mikan space transforms to Scene space transforms.
-	FTransform MikanToSceneTransform;
-
-	// Uniform scale appplied to the mikan transform
-	float MikanSceneScale = 1.f;
-
-	// The table of anchors fetched from Mikan
-	TMap<MikanSpatialAnchorID, FMikanAnchorInfo> MikanAnchorMap;
+	void GatherSceneAnchorList(TArray<class AMikanAnchorActor *>& OutAnchorActors, int32 AnchorIdFilter=-1);
+	void ApplyAnchorInfo(const struct MikanSpatialAnchorInfo& AnchorInfo);
+	void SpawnSceneCamera();
+	void DespawnSceneCamera();
+	void DespawnAllQuadStencils();
+	void DespawnAllBoxStencils();
+	void DespawnAllModelStencils();
 
 	UPROPERTY(Transient)
 	class AMikanCamera* SceneCamera= nullptr;
 
-	// A list of child AnchorComponents bound to corresponding FMikanAnchorInfo by name
+	// A table of child Quad Stencil Actors (exist only at during Play)
 	UPROPERTY(Transient)
-	TArray<class UMikanAnchorComponent*> SceneAnchors;
+	TMap<int32, class AMikanQuadStencilActor*> QuadStencils;
+
+	// A table of child Box Stencil Actors (exist only at during Play)
+	UPROPERTY(Transient)
+	TMap<int32, class AMikanBoxStencilActor*> BoxStencils;
+
+	// A table of child Model Stencil Actors (exist only at during Play)
+	UPROPERTY(Transient)
+	TMap<int32, class AMikanModelStencilActor*> ModelStencils;
+
+	bool bIsScenePlaying= false;
+
+	class IMikanAPI* MikanAPI= nullptr;
 };

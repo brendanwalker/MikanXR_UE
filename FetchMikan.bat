@@ -4,6 +4,8 @@ call %~dp0SetMikanVars_x64.bat
 echo "Clear Output Binaries"
 del "%~dp0Binaries\Win64\*.dll"
 del "%~dp0Binaries\Win64\*.pdb"
+del "%~dp0..\..\Binaries\Win64\*.dll"
+del "%~dp0..\..\Binaries\Win64\*.pdb"
 
 echo "Clear Old Headers"
 del "%~dp0ThirdParty\MikanXR\include\*.h"

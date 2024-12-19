@@ -1,5 +1,9 @@
 #include "MikanAnchorComponent.h"
+#include "MikanAnchorActor.h"
 #include "MikanScene.h"
+#include "MikanMath.h"
+
+UE_DISABLE_OPTIMIZATION
 
 UMikanAnchorComponent::UMikanAnchorComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -18,49 +22,39 @@ AMikanScene* UMikanAnchorComponent::GetParentScene() const
 	return nullptr;
 }
 
-void UMikanAnchorComponent::FetchAnchorInfo()
+void UMikanAnchorComponent::ApplyAnchorInfo(
+	MikanSpatialAnchorID InAnchorId,
+	const MikanTransform& InAnchorTransform)
 {
-	AMikanScene* OwnerScene= GetParentScene();
+	// Set the anchor ID
+	AnchorId = InAnchorId;
 
-	if (OwnerScene != nullptr)
-	{
-		const FMikanAnchorInfo* MikanAnchorInfo= OwnerScene->GetMikanAnchorInfoByName(AnchorName);
-
-		if (MikanAnchorInfo != nullptr)
-		{
-			AnchorId= MikanAnchorInfo->AnchorID;
-
-			// Update our scene transform now that we have an assigned anchor id
-			UpdateSceneTransform();
-		}
-	}
+	// Apply the anchor transform
+	ApplyAnchorTransform(InAnchorTransform);
 }
 
-void UMikanAnchorComponent::UpdateSceneTransform()
+void UMikanAnchorComponent::ApplyAnchorTransform(const MikanTransform& InAnchorTransform)
 {
-	if (AnchorId != INVALID_MIKAN_ID)
-	{
-		AMikanScene* OwnerScene = GetParentScene();
+	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
+	FTransform SceneTransform =
+		FMikanMath::MikanTransformToFTransform(
+			InAnchorTransform,
+			MetersToUU);
 
-		if (OwnerScene != nullptr)
-		{
-			// Get the corresponding mikan anchor info from the scene
-			const FMikanAnchorInfo* MikanAnchorInfo = OwnerScene->GetMikanAnchorInfoById(AnchorId);
-
-			if (MikanAnchorInfo != nullptr)
-			{
-				// Get the anchor transform in Mikan Space
-				const FTransform& MikanSpaceTransform= MikanAnchorInfo->MikanSpaceTransform;
-
-				// Get the conversion from the scene to go from Mikan to Scene space
-				const FTransform& MikanToSceneXform = OwnerScene->GetMikanToSceneTransform();
-
-				// Compute the Scene space transform
-				const FTransform SceneSpaceTransform= MikanSpaceTransform * MikanToSceneXform;
-
-				// Update the anchor scene componetn transform
-				SetRelativeTransform(SceneSpaceTransform);
-			}
-		}
-	}
+	SetRelativeTransform(SceneTransform);
 }
+
+#if WITH_EDITOR  
+void UMikanAnchorComponent::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	const FName PropertyName = (PropertyChangedEvent.Property != NULL) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UMikanAnchorComponent, AnchorName))
+	{
+		Cast<AMikanAnchorActor>(GetOwner())->UpdateLabelText();
+	}	
+}
+#endif
+
+UE_ENABLE_OPTIMIZATION

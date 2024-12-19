@@ -3,7 +3,8 @@
 #include "MikanXREditorBase.h"
 #include "MikanXREditorWidget.h"
 
-#include "AssetRegistryModule.h"
+//#include "AssetRegistry/AssetDataTagMap.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "EditorUtilityWidget.h"
 #include "EditorUtilitySubsystem.h"
 #include "EditorUtilityWidgetBlueprint.h"
@@ -27,8 +28,8 @@ void UMikanXREditorBase::SetEditorTab(const TSharedRef<SDockTab>& NewEditorTab)
 UEditorUtilityWidgetBlueprint* UMikanXREditorBase::GetUtilityWidgetBlueprint()
 {
 	// Get the Editor Utility Widget Blueprint from the content directory.
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath("/MikanXR/MikanXRWidget_BP.MikanXRWidget_BP");
+	IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
+	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath("/MikanXR/MikanXRWidget_BP.MikanXRWidget_BP");
 	return Cast<UEditorUtilityWidgetBlueprint>(AssetData.GetAsset());
 }
 

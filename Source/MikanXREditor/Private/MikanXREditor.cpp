@@ -3,7 +3,6 @@
 #include "MikanXREditor.h"
 #include "MikanXREditorWidget.h"
 
-#include "AssetRegistryModule.h"
 #include "EditorUtilityWidget.h"
 #include "EditorUtilitySubsystem.h"
 #include "EditorUtilityWidgetBlueprint.h"

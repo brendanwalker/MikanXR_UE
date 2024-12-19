@@ -6,15 +6,17 @@
 #include "Containers/Ticker.h"
 #include "DynamicRHI.h"
 #include "HAL/UnrealMemory.h"
+#include "Logging/LogMacros.h"
 #include "Misc/App.h"
 #include "Misc/CString.h"
 #include "Misc/Paths.h"
 #include "Misc/EngineVersion.h"
-#include "MikanClient_CAPI.h"
+#include "MikanAPI.h"
+#include "MikanClientEvents.h"
+#include "MikanClientRequests.h"
 #include "MikanWorldSubsystem.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(MikanXR, Log, All);
-DEFINE_LOG_CATEGORY(MikanXR);
+DEFINE_LOG_CATEGORY(MikanXRLog);
 
 class FMikanXRModule : public IMikanXRModule
 {
@@ -26,7 +28,7 @@ class FMikanXRModule : public IMikanXRModule
 	static void MIKAN_CALLBACK MikanLogCallback(int log_level, const char* log_message);
 
 	FTickerDelegate TickDelegate;
-	FDelegateHandle TickDelegateHandle;
+	FTSTicker::FDelegateHandle TickDelegateHandle;
 	float MikanReconnectTimeout= 0.f;
 	bool bAutoReconnectEnabled= true;
 	bool bIsConnected= false;
@@ -35,11 +37,19 @@ class FMikanXRModule : public IMikanXRModule
 	virtual void ConnectSubsystem(UMikanWorldSubsystem* World) override;
 	virtual void DisconnectSubsystem(UMikanWorldSubsystem* World) override;
 	virtual bool GetIsConnected() override;
-	virtual void GetClientInfo(MikanClientInfo* OutClientInfo)
+	virtual IMikanAPI* GetMikanAPI() override
+	{
+		// Expose the raw C++ pointer to other unreal systems, rather than the smart pointer.
+		// The MikanAPI's lifetime is owned by the module and will be destroyed when the module is unloaded,
+		// an thus we don't want other modules to hold onto a reference to it.
+		return MikanAPI.get();
+	}
+	virtual void GetClientInfo(MikanClientInfo* OutClientInfo) override
 	{
 		*OutClientInfo= ClientInfo;
 	}
 
+	IMikanAPIPtr MikanAPI= nullptr;
 	MikanClientInfo ClientInfo;
 	TArray<UMikanWorldSubsystem*> ConnectedSubsystems;
 };
@@ -48,23 +58,32 @@ IMPLEMENT_MODULE(FMikanXRModule, MikanXR)
 
 void FMikanXRModule::StartupModule()
 {
-	MikanResult Result= Mikan_Initialize(MikanLogLevel_Info, &FMikanXRModule::MikanLogCallback);
-	if (Result == MikanResult_Success)
+	MikanAPI = IMikanAPI::createMikanAPI();
+	if (!MikanAPI)
 	{
-		UE_LOG(MikanXR, Log, TEXT("Initialized MikanXR API"));
+		UE_LOG(MikanXRLog, Error, TEXT("Failed to create MikanXR API"));
+		return;
+	}
+
+	MikanAPIResult Result= MikanAPI->init(MikanLogLevel_Info, &FMikanXRModule::MikanLogCallback);
+	if (Result == MikanAPIResult::Success)
+	{
+		UE_LOG(MikanXRLog, Log, TEXT("Initialized MikanXR API"));
 
 		const FString EngineVersion = FEngineVersion::Current().ToString();
-		const TCHAR* ProjectName = FApp::GetProjectName();
-		const TCHAR* ProjectVer = FApp::GetBuildVersion();
+		const auto EngineVersionAnsi = StringCast<ANSICHAR>(*EngineVersion);
+		const auto ProjectNameAnsi = StringCast<ANSICHAR>(FApp::GetProjectName());
+		const auto ProjectVerAnsi = StringCast<ANSICHAR>(FApp::GetBuildVersion());
 
-		FMemory::Memset(&ClientInfo, 0, sizeof(MikanClientInfo));
-		ClientInfo.supportedFeatures = MikanFeature_RenderTarget_BGRA32;
-		FCStringAnsi::Strncpy(ClientInfo.engineName, "UnrealEngine", sizeof(ClientInfo.engineName) - 1);
-		FCStringAnsi::Strncpy(ClientInfo.engineVersion, TCHAR_TO_ANSI(*EngineVersion), sizeof(ClientInfo.engineVersion) - 1);
-		FCStringAnsi::Strncpy(ClientInfo.applicationName, TCHAR_TO_ANSI(ProjectName), sizeof(ClientInfo.applicationName) - 1);
-		FCStringAnsi::Strncpy(ClientInfo.applicationVersion, TCHAR_TO_ANSI(ProjectVer), sizeof(ClientInfo.applicationVersion) - 1);
-		ClientInfo.xrDeviceName[0] = '\0';
-		FCStringAnsi::Strncpy(ClientInfo.mikanSdkVersion, Mikan_GetVersionString(), sizeof(ClientInfo.mikanSdkVersion) - 1);
+		ClientInfo= MikanAPI->allocateClientInfo();
+		ClientInfo.supportsRGBA32 = true;
+		ClientInfo.supportsBGRA32= true;
+		ClientInfo.supportsDepth= true;
+		ClientInfo.engineName= "UnrealEngine";
+		ClientInfo.engineVersion= EngineVersionAnsi.Get();
+		ClientInfo.applicationName= ProjectNameAnsi.Get();
+		ClientInfo.applicationVersion= ProjectVerAnsi.Get();
+		ClientInfo.xrDeviceName= "";
 
 		const FString RHIName= GDynamicRHI->GetName();
 		if (RHIName == TEXT("D3D9"))
@@ -88,40 +107,53 @@ void FMikanXRModule::StartupModule()
 			ClientInfo.graphicsAPI = MikanClientGraphicsApi_UNKNOWN;
 		}
 
+		// Store the graphics device interface in the MikanAPI
 		if (ClientInfo.graphicsAPI != MikanClientGraphicsApi_UNKNOWN)
 		{
 			void* graphicsDeviceInterface= GDynamicRHI->RHIGetNativeDevice();
 
 			if (graphicsDeviceInterface != nullptr)
 			{
-				Mikan_SetGraphicsDeviceInterface(ClientInfo.graphicsAPI, graphicsDeviceInterface);
+				MikanAPI->setGraphicsDeviceInterface(
+					ClientInfo.graphicsAPI, 
+					graphicsDeviceInterface);
 			}
 		}
 	}
 	else
 	{
-		UE_LOG(MikanXR, Error, TEXT("Failed MikanXR API (error code: %d)"), Result);
+		UE_LOG(MikanXRLog, Error, TEXT("Failed MikanXR API (error code: %d)"), Result);
 	}
 }
 
 void FMikanXRModule::ShutdownModule()
 {
-	Mikan_Shutdown();
+	if (MikanAPI)
+	{
+		MikanAPI->shutdown();
+		MikanAPI= nullptr;
+	}
 }
 
 void FMikanXRModule::ConnectSubsystem(UMikanWorldSubsystem* Subsystem)
 {
-	void* graphicsDeviceInterface= nullptr;
-	Mikan_GetGraphicsDeviceInterface(ClientInfo.graphicsAPI, &graphicsDeviceInterface);
-	check(graphicsDeviceInterface == GDynamicRHI->RHIGetNativeDevice());
-
-	if (ConnectedSubsystems.Num() == 0)
+	if (MikanAPI)
 	{
-		TickDelegate = FTickerDelegate::CreateRaw(this, &FMikanXRModule::Tick);
-		TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(TickDelegate);
-	}
+		void* graphicsDeviceInterface = nullptr;
+		MikanAPI->getGraphicsDeviceInterface(
+			ClientInfo.graphicsAPI,
+			&graphicsDeviceInterface);
 
-	ConnectedSubsystems.AddUnique(Subsystem);
+		check(graphicsDeviceInterface == GDynamicRHI->RHIGetNativeDevice());
+
+		if (ConnectedSubsystems.Num() == 0)
+		{
+			TickDelegate = FTickerDelegate::CreateRaw(this, &FMikanXRModule::Tick);
+			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate);
+		}
+
+		ConnectedSubsystems.AddUnique(Subsystem);
+	}
 }
 
 void FMikanXRModule::DisconnectSubsystem(UMikanWorldSubsystem* Subsystem)
@@ -130,48 +162,82 @@ void FMikanXRModule::DisconnectSubsystem(UMikanWorldSubsystem* Subsystem)
 
 	if (ConnectedSubsystems.Num() == 0)
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 
-		if (Mikan_GetIsConnected())
+		if (MikanAPI->getIsConnected())
 		{
-			Mikan_Disconnect();
+			DisposeClientRequest disposeRequest = {};
+			MikanAPI->sendRequest(disposeRequest).get();
+
+			MikanAPI->disconnect();
 		}
 	}
 }
 
 bool FMikanXRModule::GetIsConnected()
 {
-	return Mikan_GetIsConnected();
+	return MikanAPI && MikanAPI->getIsConnected();
 }
 
 bool FMikanXRModule::Tick(float DeltaTime)
 {
-	if (Mikan_GetIsConnected())
+	if (MikanAPI)
 	{
-		MikanEvent event;
-		while (Mikan_PollNextEvent(&event) == MikanResult_Success)
+		if (MikanAPI->getIsConnected())
 		{
-			for (UMikanWorldSubsystem* Subsystem : ConnectedSubsystems)
+			MikanEventPtr mikanEvent;
+			while (MikanAPI->fetchNextEvent(mikanEvent) == MikanAPIResult::Success)
 			{
-				Subsystem->HandleMikanEvent(&event);
-			}
-		}
-	}
-	else 
-	{
-		if (ConnectedSubsystems.Num() > 0)
-		{
-			if (MikanReconnectTimeout <= 0.f)
-			{
-				if (Mikan_Connect(&ClientInfo) != MikanResult_Success)
+				// Handle connection related events
+				if (typeid(*mikanEvent) == typeid(MikanConnectedEvent))
 				{
-					// timeout between reconnect attempts
-					MikanReconnectTimeout = 1.0f;
+					// Send client info back to the server on connection
+					InitClientRequest initClientRequest = {};
+					initClientRequest.clientInfo = ClientInfo;
+
+					MikanAPI->sendRequest(initClientRequest).get();
+				}
+				else if (typeid(*mikanEvent) == typeid(MikanDisconnectedEvent))
+				{
+					auto disconnectEvent = std::static_pointer_cast<MikanDisconnectedEvent>(mikanEvent);
+					const std::string reason = disconnectEvent->reason.getValue();
+
+					if (disconnectEvent->code == MikanDisconnectCode_IncompatibleVersion)
+					{
+						// The server has disconnected us because we are using an incompatible version
+						// Disable reconnection, since it is never going to work
+						bAutoReconnectEnabled = true;
+						UE_LOG(MikanXRLog, Error, TEXT("MikanDisconnectedEvent: Disable reconnect due to incompatible client"));
+					}
+					else
+					{
+						UE_LOG(MikanXRLog, Log, TEXT("MikanDisconnectedEvent: %s"), ANSI_TO_TCHAR(reason.c_str()));
+					}
+				}
+
+				// Forward the event to all connected subsystems
+				for (UMikanWorldSubsystem* Subsystem : ConnectedSubsystems)
+				{
+					Subsystem->HandleMikanEvent(mikanEvent);
 				}
 			}
-			else
+		}
+		else
+		{
+			if (ConnectedSubsystems.Num() > 0)
 			{
-				MikanReconnectTimeout -= DeltaTime;
+				if (MikanReconnectTimeout <= 0.f)
+				{
+					if (MikanAPI->connect() != MikanAPIResult::Success)
+					{
+						// timeout between reconnect attempts
+						MikanReconnectTimeout = 1.0f;
+					}
+				}
+				else
+				{
+					MikanReconnectTimeout -= DeltaTime;
+				}
 			}
 		}
 	}
@@ -184,22 +250,22 @@ void FMikanXRModule::MikanLogCallback(int log_level, const char* log_message)
 	switch (log_level)
 	{
 		case MikanLogLevel_Trace:
-			UE_LOG(MikanXR, VeryVerbose, TEXT("%s"), ANSI_TO_TCHAR(log_message));
+			UE_LOG(MikanXRLog, VeryVerbose, TEXT("%s"), ANSI_TO_TCHAR(log_message));
 			break;
 		case MikanLogLevel_Debug:
-			UE_LOG(MikanXR, Verbose, TEXT("%s"), ANSI_TO_TCHAR(log_message));
+			UE_LOG(MikanXRLog, Verbose, TEXT("%s"), ANSI_TO_TCHAR(log_message));
 			break;
 		case MikanLogLevel_Info:
-			UE_LOG(MikanXR, Log, TEXT("%s"), ANSI_TO_TCHAR(log_message));
+			UE_LOG(MikanXRLog, Log, TEXT("%s"), ANSI_TO_TCHAR(log_message));
 			break;
 		case MikanLogLevel_Warning:
-			UE_LOG(MikanXR, Warning, TEXT("%s"), ANSI_TO_TCHAR(log_message));
+			UE_LOG(MikanXRLog, Warning, TEXT("%s"), ANSI_TO_TCHAR(log_message));
 			break;
 		case MikanLogLevel_Error:
-			UE_LOG(MikanXR, Error, TEXT("%s"), ANSI_TO_TCHAR(log_message));
+			UE_LOG(MikanXRLog, Error, TEXT("%s"), ANSI_TO_TCHAR(log_message));
 			break;
 		case MikanLogLevel_Fatal:
-			UE_LOG(MikanXR, Fatal, TEXT("%s"), ANSI_TO_TCHAR(log_message));
+			UE_LOG(MikanXRLog, Fatal, TEXT("%s"), ANSI_TO_TCHAR(log_message));
 			break;
 	}
 }

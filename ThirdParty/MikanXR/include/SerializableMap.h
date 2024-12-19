@@ -183,7 +183,7 @@ namespace Serialization NAMESPACE()
 		}
 
 		METHOD()
-		std::shared_ptr<IMapConstEnumerator> getConstEnumerator()
+		std::shared_ptr<IMapConstEnumerator> getConstEnumerator() const
 		{
 			return std::make_shared<MapConstEnumerator<t_key, t_value>>(*this);
 		}

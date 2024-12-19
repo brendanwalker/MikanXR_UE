@@ -1,256 +1,549 @@
 #include "MikanScene.h"
+#include "MikanAnchorActor.h"
 #include "MikanAnchorComponent.h"
 #include "MikanCamera.h"
 #include "MikanCaptureComponent.h"
 #include "MikanMath.h"
+#include "MikanQuadStencilActor.h"
+#include "MikanBoxStencilActor.h"
+#include "MikanModelStencilActor.h"
+#include "MikanVideoSourceTypes.h"
+#include "MikanSpatialAnchorTypes.h"
+#include "MikanSpatialAnchorRequests.h"
+#include "MikanStencilTypes.h"
+#include "MikanStencilRequests.h"
+#include "MikanStencilActor.h"
 #include "MikanWorldSubsystem.h"
-#include "MikanClient_CAPI.h"
+#include "MikanAPI.h"
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION
 
 AMikanScene::AMikanScene(const FObjectInitializer& ObjectInitializer)
 {
 	SceneOrigin = CreateDefaultSubobject<USceneComponent>(TEXT("SceneOrigin"));
 	RootComponent = SceneOrigin;
+	CameraClass = AMikanCamera::StaticClass();
+}
 
-	MikanToSceneTransform= FTransform();
+void AMikanScene::PostRegisterAllComponents()
+{
+	Super::PostRegisterAllComponents();
+
+	// Listen for stencil changes
+	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
+	if (MikanWorldSubsystem)
+	{
+		MikanAPI = MikanWorldSubsystem->GetMikanAPI();
+
+		// Register the scene with the world subsystem (if not already registered)
+		if (MikanWorldSubsystem->RegisterMikanScene(this))
+		{
+			MikanWorldSubsystem->OnMikanConnected.AddDynamic(this, &AMikanScene::HandleMikanConnected);
+			MikanWorldSubsystem->OnAnchorListChanged.AddDynamic(this, &AMikanScene::HandleAnchorListChanged);
+			MikanWorldSubsystem->OnAnchorNameChanged.AddDynamic(this, &AMikanScene::HandleAnchorNameChanged);
+			MikanWorldSubsystem->OnAnchorPoseChanged.AddDynamic(this, &AMikanScene::HandleAnchorPoseChanged);
+
+			// If we are already connected, handle the connection side effects
+			if (MikanAPI->getIsConnected())
+			{
+				HandleMikanConnected();
+			}
+		}
+	}
+}
+
+void AMikanScene::Destroyed()
+{
+	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
+	if (MikanWorldSubsystem)
+	{
+		MikanWorldSubsystem->OnMikanConnected.RemoveDynamic(this, &AMikanScene::HandleMikanConnected);
+		MikanWorldSubsystem->OnAnchorListChanged.RemoveDynamic(this, &AMikanScene::HandleAnchorListChanged);
+		MikanWorldSubsystem->OnAnchorNameChanged.RemoveDynamic(this, &AMikanScene::HandleAnchorNameChanged);
+		MikanWorldSubsystem->OnAnchorPoseChanged.RemoveDynamic(this, &AMikanScene::HandleAnchorPoseChanged);
+
+		MikanWorldSubsystem->UnregisterMikanScene(this);
+	}
+
+	Super::Destroyed();
 }
 
 void AMikanScene::BeginPlay()
 {
 	Super::BeginPlay();
 
-	MikanToSceneTransform= FTransform();
+	bIsScenePlaying= true;
 
+	// Listen for stencil changes
 	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
 	if (MikanWorldSubsystem)
 	{
-		MikanWorldSubsystem->BindMikanScene(this);
+		MikanWorldSubsystem->OnQuadStencilListChanged.AddDynamic(this, &AMikanScene::HandleQuadStencilListChanged);
+		MikanWorldSubsystem->OnBoxStencilListChanged.AddDynamic(this, &AMikanScene::HandleBoxStencilListChanged);
+		MikanWorldSubsystem->OnModelStencilListChanged.AddDynamic(this, &AMikanScene::HandleModelStencilListChanged);
+		MikanWorldSubsystem->OnStencilNameChanged.AddDynamic(this, &AMikanScene::HandleStencilNameChanged);
+		MikanWorldSubsystem->OnStencilPoseChanged.AddDynamic(this, &AMikanScene::HandleStencilPoseChanged);
+
+		// Create the camera for the scene
+		SpawnSceneCamera();
+
+		if (MikanAPI->getIsConnected())
+		{
+			HandleMikanConnected();
+		}
 	}
-
-	// Find the first attached mikan scene
-	BindSceneCamera();
-
-	// Gather all of the scene anchor components attached to the scene
-	RebuildSceneAnchorList();
 }
 
 void AMikanScene::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	Super::EndPlay(EndPlayReason);
+	DespawnSceneCamera();
+	DespawnAllModelStencils();
 
+	// Stop listening for stencil changes
 	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
 	if (MikanWorldSubsystem)
 	{
-		MikanWorldSubsystem->UnbindMikanScene(this);
+		MikanWorldSubsystem->OnQuadStencilListChanged.RemoveDynamic(this, &AMikanScene::HandleQuadStencilListChanged);
+		MikanWorldSubsystem->OnBoxStencilListChanged.RemoveDynamic(this, &AMikanScene::HandleBoxStencilListChanged);
+		MikanWorldSubsystem->OnModelStencilListChanged.RemoveDynamic(this, &AMikanScene::HandleModelStencilListChanged);
+		MikanWorldSubsystem->OnStencilNameChanged.RemoveDynamic(this, &AMikanScene::HandleStencilNameChanged);
+		MikanWorldSubsystem->OnStencilPoseChanged.RemoveDynamic(this, &AMikanScene::HandleStencilPoseChanged);
+	}
+
+	bIsScenePlaying= false;
+
+	Super::EndPlay(EndPlayReason);
+}
+
+// Scene Events
+void AMikanScene::HandleSceneActivated()
+{
+
+}
+
+void AMikanScene::HandleSceneDeactivated()
+{
+}
+
+// App Connection Events
+void AMikanScene::HandleMikanConnected()
+{
+	HandleAnchorListChanged();
+
+	if (bIsScenePlaying)
+	{
+		HandleQuadStencilListChanged();
+		HandleBoxStencilListChanged();
+		HandleModelStencilListChanged();
 	}
 }
 
-FMikanAnchorInfo* AMikanScene::GetMikanAnchorInfoById(MikanSpatialAnchorID AnchorId)
+// Spatial Anchor Events
+void AMikanScene::HandleAnchorListChanged()
 {
-	return MikanAnchorMap.Find(AnchorId);
+	UWorld* World = GetWorld();
+	const float MetersToUU = World->GetWorldSettings()->WorldToMeters;
+
+	// Get a list of all anchors in the scene
+	TArray<AMikanAnchorActor*> AnchorActors;
+	GatherSceneAnchorList(AnchorActors);
+
+	// Fetch the list of spatial anchors from Mikan and apply them to the scene
+	GetSpatialAnchorList listRequest;
+	auto listResponse= MikanAPI->sendRequest(listRequest).get();
+	if (listResponse->resultCode == MikanAPIResult::Success)
+	{
+		auto SpatialAnchorList= std::static_pointer_cast<MikanSpatialAnchorListResponse>(listResponse);
+
+		for (size_t Index = 0; Index < SpatialAnchorList->spatial_anchor_id_list.size(); ++Index)
+		{
+			const MikanSpatialAnchorID AnchorId= SpatialAnchorList->spatial_anchor_id_list[Index];
+
+			GetSpatialAnchorInfo anchorRequest;
+			anchorRequest.anchorId= AnchorId;
+
+			auto anchorResponse= MikanAPI->sendRequest(anchorRequest).get();
+			if (anchorResponse->resultCode == MikanAPIResult::Success)
+			{
+				auto MikanAnchorResponse= std::static_pointer_cast<MikanSpatialAnchorInfoResponse>(anchorResponse);
+
+				ApplyAnchorInfo(MikanAnchorResponse->anchor_info);
+			}
+		}
+	}
 }
 
-FMikanAnchorInfo* AMikanScene::GetMikanAnchorInfoByName(const FString& AnchorName)
+void AMikanScene::HandleAnchorNameChanged(
+	int32 AnchorID, 
+	const FString& AnchorName)
 {
-	for (auto It = MikanAnchorMap.CreateIterator(); It; ++It)
-	{
-		FMikanAnchorInfo& AnchorInfo= It.Value();
+	GetSpatialAnchorInfo anchorRequest;
+	anchorRequest.anchorId= AnchorID;
 
-		if (AnchorInfo.AnchorName == AnchorName)
+	auto anchorResponse = MikanAPI->sendRequest(anchorRequest).get();
+	if (anchorResponse->resultCode == MikanAPIResult::Success)
+	{
+		auto MikanAnchorResponse = std::static_pointer_cast<MikanSpatialAnchorInfoResponse>(anchorResponse);
+
+		// Unbind any other anchors with the same ID but different names
+		TArray<AMikanAnchorActor*> AnchorActors;
+		GatherSceneAnchorList(AnchorActors, AnchorID);
+		for (AMikanAnchorActor* AnchorActor : AnchorActors)
 		{
-			return &AnchorInfo;
+			if (AnchorActor->GetAnchorName() != AnchorName)
+			{
+				AnchorActor->UnbindAnchorId();
+			}
 		}
+
+		// Apply anchor info to any actor with matching name
+		ApplyAnchorInfo(MikanAnchorResponse->anchor_info);
+	}
+}
+
+void AMikanScene::HandleAnchorPoseChanged(
+	int32 AnchorID, 
+	const FTransform& SceneTransform)
+{
+	TArray<AMikanAnchorActor*> AnchorActors;
+	GatherSceneAnchorList(AnchorActors, AnchorID);
+	for (AMikanAnchorActor* AnchorActor : AnchorActors)
+	{
+		AnchorActor->SetActorRelativeTransform(SceneTransform);
+	}
+}
+
+void AMikanScene::GatherSceneAnchorList(
+	TArray<AMikanAnchorActor *>& OutAnchorActors,
+	int32 AnchorIdFilter)
+{
+	OutAnchorActors.Reset();
+
+	TArray<USceneComponent*> AllSceneChildComponents;
+	SceneOrigin->GetChildrenComponents(true, AllSceneChildComponents);
+	for (USceneComponent* AttachedChild : AllSceneChildComponents)
+	{
+		UMikanAnchorComponent* AnchorComponent = Cast<UMikanAnchorComponent>(AttachedChild);
+
+		if (AnchorComponent != nullptr)
+		{
+			auto* AnchorActor = CastChecked<AMikanAnchorActor>(AnchorComponent->GetOwner());
+
+			if (AnchorIdFilter == -1 || AnchorActor->GetAnchorId() == AnchorIdFilter)
+			{
+				OutAnchorActors.Add(AnchorActor);
+			}
+		}
+	}
+}
+
+void AMikanScene::ApplyAnchorInfo(const struct MikanSpatialAnchorInfo& AnchorInfo)
+{
+	TArray<AMikanAnchorActor*> AnchorActors;
+	GatherSceneAnchorList(AnchorActors, -1);
+
+	auto AnchorNameTChar = StringCast<TCHAR>(AnchorInfo.anchor_name.getValue().c_str());
+	FString AnchorName = FString(AnchorNameTChar.Get());
+
+	for (AMikanAnchorActor* AnchorActor : AnchorActors)
+	{
+		if (AnchorActor->GetAnchorName() == AnchorName)
+		{
+			AnchorActor->ApplyAnchorInfo(AnchorInfo);
+		}
+	}
+}
+
+// Stencil Events
+void AMikanScene::HandleQuadStencilListChanged()
+{
+	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
+
+	GetQuadStencilList quadStencilListRequest;
+	auto listResponse = MikanAPI->sendRequest(quadStencilListRequest).get();
+	if (listResponse->resultCode == MikanAPIResult::Success)
+	{
+		auto QuadStencilList = std::static_pointer_cast<MikanStencilListResponse>(listResponse);
+		auto& NewStencilIDList = QuadStencilList->stencil_id_list;
+
+		// See if any existing stencils no longer exist in Mikan and need to be removed
+		TArray<MikanStencilID> ExistingIDs;
+		QuadStencils.GetKeys(ExistingIDs);
+		for (MikanStencilID ExistingID : ExistingIDs)
+		{
+			auto it = std::find(NewStencilIDList.begin(), NewStencilIDList.end(), ExistingID);
+			if (it == NewStencilIDList.end())
+			{
+				// Destroy the existing stencil actor
+				AMikanStencilActor* ExistingStencil = QuadStencils[ExistingID];
+				if (ExistingStencil)
+				{
+					ExistingStencil->Destroy();
+				}
+
+				// Remove the stencil entry from the table
+				QuadStencils.Remove(ExistingID);
+			}
+		}
+		QuadStencils.Compact();
+
+		// Update any existing Model Stencils or spawn new ones
+		for (MikanStencilID StencilID : NewStencilIDList)
+		{
+			// Update or create quad stencil actor
+			GetQuadStencil quadStencilRequest;
+			quadStencilRequest.stencilId= StencilID;
+
+			auto Response = MikanAPI->sendRequest(quadStencilRequest).get();
+			if (Response->resultCode == MikanAPIResult::Success)
+			{
+				auto StencilResponse = std::static_pointer_cast<MikanStencilQuadInfoResponse>(Response);
+
+				AMikanQuadStencilActor** ExistingStencil = QuadStencils.Find(StencilID);
+				if (ExistingStencil != nullptr)
+				{
+					// Update the existing stencil
+					(*ExistingStencil)->ApplyQuadStencilInfo(StencilResponse->quad_info);
+				}
+				else
+				{
+					// Spawn the stencil actor
+					auto* NewStencil = AMikanQuadStencilActor::SpawnStencil(this, StencilResponse->quad_info);
+					if (NewStencil != nullptr)
+					{
+						QuadStencils.Emplace(StencilID, NewStencil);
+					}
+				}
+			}
+		}
+	}
+}
+
+void AMikanScene::HandleBoxStencilListChanged()
+{
+	GetBoxStencilList listRequest;
+	auto listResponse = MikanAPI->sendRequest(listRequest).get();
+	if (listResponse->resultCode == MikanAPIResult::Success)
+	{
+		auto BoxStencilList = std::static_pointer_cast<MikanStencilListResponse>(listResponse);
+		auto& NewStencilIDList = BoxStencilList->stencil_id_list;
+
+		// See if any existing stencils no longer exist in Mikan and need to be removed
+		TArray<MikanStencilID> ExistingIDs;
+		BoxStencils.GetKeys(ExistingIDs);
+		for (MikanStencilID ExistingID : ExistingIDs)
+		{
+			auto it = std::find(NewStencilIDList.begin(), NewStencilIDList.end(), ExistingID);
+			if (it == NewStencilIDList.end())
+			{
+				// Destroy the existing stencil actor
+				AMikanStencilActor* ExistingStencil = BoxStencils[ExistingID];
+				if (ExistingStencil)
+				{
+					ExistingStencil->Destroy();
+				}
+
+				// Remove the stencil entry from the table
+				BoxStencils.Remove(ExistingID);
+			}
+		}
+		BoxStencils.Compact();
+
+		// Update any existing Model Stencils or spawn new ones
+		for (MikanStencilID StencilID : NewStencilIDList)
+		{
+			// Update or create box stencil object
+			GetBoxStencil StencilRequest;
+			StencilRequest.stencilId = StencilID;
+
+			auto Response = MikanAPI->sendRequest(StencilRequest).get();
+			if (Response->resultCode == MikanAPIResult::Success)
+			{
+				auto StencilResponse = std::static_pointer_cast<MikanStencilBoxInfoResponse>(Response);
+
+				AMikanBoxStencilActor** ExistingStencil = BoxStencils.Find(StencilID);
+				if (ExistingStencil != nullptr)
+				{
+					// Update the existing stencil
+					(*ExistingStencil)->ApplyBoxStencilInfo(StencilResponse->box_info);
+				}
+				else
+				{
+					// Spawn the stencil actor
+					auto* NewStencil = AMikanBoxStencilActor::SpawnStencil(this, StencilResponse->box_info);
+
+					if (NewStencil != nullptr)
+					{
+						// Keep track of the stencil actor
+						BoxStencils.Emplace(StencilID, NewStencil);
+					}
+				}
+			}
+		}
+	}
+}
+
+void AMikanScene::HandleModelStencilListChanged()
+{
+	GetModelStencilList listRequest;
+	auto listResponse= MikanAPI->sendRequest(listRequest).get();
+	if (listResponse->resultCode == MikanAPIResult::Success)
+	{
+		auto ModelStencilList= std::static_pointer_cast<MikanStencilListResponse>(listResponse);
+		auto& NewStencilIDList= ModelStencilList->stencil_id_list;
+
+		// See if any existing stencils no longer exist in Mikan and need to be removed
+		TArray<MikanStencilID> ExistingIDs;
+		ModelStencils.GetKeys(ExistingIDs);
+		for (MikanStencilID ExistingID : ExistingIDs)
+		{
+			auto it= std::find(NewStencilIDList.begin(), NewStencilIDList.end(), ExistingID);
+			if (it == NewStencilIDList.end())
+			{
+				// Destroy the existing stenil actor
+				AMikanStencilActor* ExistingStencil= ModelStencils[ExistingID];
+				if (ExistingStencil)
+				{
+					ExistingStencil->Destroy();
+				}
+
+				// Remove the stencil entry from the table
+				ModelStencils.Remove(ExistingID);
+			}
+		}
+		ModelStencils.Compact();
+
+		// Update any existing Model Stencils or spawn new ones
+		for (MikanStencilID StencilID : NewStencilIDList)
+		{
+			// Update or create core stencil object
+			GetModelStencil StencilRequest;
+			StencilRequest.stencilId= StencilID;
+
+			auto Response= MikanAPI->sendRequest(StencilRequest).get();
+			if (Response->resultCode == MikanAPIResult::Success)
+			{
+				auto StencilResponse= std::static_pointer_cast<MikanStencilModelInfoResponse>(Response);
+
+				AMikanModelStencilActor** ExistingStencil= ModelStencils.Find(StencilID);
+				if (ExistingStencil != nullptr)
+				{
+					// Update the existing stencil
+					(*ExistingStencil)->ApplyModelStencilInfo(StencilResponse->model_info);
+				}
+				else
+				{
+					// Spawn the stencil actor
+					auto* NewStencil = AMikanModelStencilActor::SpawnStencil(this, StencilResponse->model_info);
+
+					if (NewStencil != nullptr)
+					{
+						// Keep track of the stencil actor
+						ModelStencils.Emplace(StencilID, NewStencil);
+					}
+				}
+			}
+		}
+	}
+}
+
+void AMikanScene::HandleStencilNameChanged(int32 StencilID, const FString& StencilName)
+{
+	AMikanStencilActor* Stencil = GetMikanStencilById(StencilID);
+	if (Stencil != nullptr)
+	{
+		Stencil->ApplyStencilName(StencilName);
+	}
+}
+
+void AMikanScene::HandleStencilPoseChanged(int32 StencilID, const FTransform& SceneTransform)
+{
+	AMikanStencilActor* Stencil = GetMikanStencilById(StencilID);
+	if (Stencil != nullptr)
+	{
+		Stencil->SetActorRelativeTransform(SceneTransform);
+	}
+}
+
+AMikanStencilActor* AMikanScene::GetMikanStencilById(MikanStencilID StencilID)
+{
+	AMikanModelStencilActor** ExistingStencil = ModelStencils.Find(StencilID);
+	if (ExistingStencil != nullptr)
+	{
+		return *ExistingStencil;
 	}
 
 	return nullptr;
 }
 
-void AMikanScene::HandleMikanConnected()
+// Script Message Events
+void AMikanScene::HandleScriptMessage(const FString& Message)
 {
-	HandleCameraIntrinsicsChanged();
-	HandleAnchorListChanged();
+	OnMikanScriptMessage(Message);
 }
 
-void AMikanScene::HandleMikanDisconnected()
+// Internal Methods
+void AMikanScene::SpawnSceneCamera()
 {
+	DespawnSceneCamera();
 
-}
-
-void AMikanScene::HandleAnchorListChanged()
-{
 	UWorld* World = GetWorld();
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Name= TEXT("MikanSceneCamera");
+	SpawnParameters.Owner = this;
+	SceneCamera = World->SpawnActor<AMikanCamera>(CameraClass, SceneOrigin->GetComponentTransform(), SpawnParameters);
+	SceneCamera->AttachToComponent(SceneOrigin, FAttachmentTransformRules::SnapToTargetIncludingScale);
+}
 
-	MikanAnchorMap.Reset();
-
-	// Rebuild the list of anchors
-	MikanSpatialAnchorList SpatialAnchorList;
-	if (Mikan_GetSpatialAnchorList(&SpatialAnchorList) == MikanResult_Success)
+void AMikanScene::DespawnSceneCamera()
+{
+	if (SceneCamera != nullptr)
 	{
-		for (int Index = 0; Index < SpatialAnchorList.spatial_anchor_count; ++Index)
+		SceneCamera->Destroy();
+		SceneCamera = nullptr;
+	}
+}
+
+void AMikanScene::DespawnAllQuadStencils()
+{
+	for (auto& Elem : QuadStencils)
+	{
+		AMikanStencilActor* Stencil = Elem.Value;
+
+		if (Stencil != nullptr)
 		{
-			const MikanSpatialAnchorID AnchorId= SpatialAnchorList.spatial_anchor_id_list[Index];
-
-			MikanSpatialAnchorInfo MikanAnchorInfo;
-			if (Mikan_GetSpatialAnchorInfo(AnchorId, &MikanAnchorInfo) == MikanResult_Success)
-			{
-				FMikanAnchorInfo SceneAnchorInfo = {};
-
-				// Copy over the anchor id
-				check(AnchorId == MikanAnchorInfo.anchor_id);
-				SceneAnchorInfo.AnchorID= AnchorId;
-
-				// Copy Anchor Name (convert to UTF-16 from ansi string)
-				SceneAnchorInfo.AnchorName = ANSI_TO_TCHAR(MikanAnchorInfo.anchor_name);
-
-				// Get the transform of the anchor in Mikan Space
-				const float MetersToUU = World->GetWorldSettings()->WorldToMeters;
-				SceneAnchorInfo.MikanSpaceTransform =
-					FMikanMath::MikanTransformToFTransform(MikanAnchorInfo.world_transform, MetersToUU);
-
-				// Add anchor to the anchor table
-				MikanAnchorMap.Emplace(AnchorId, SceneAnchorInfo);
-			}
+			Stencil->Destroy();
 		}
 	}
-
-	// We can now recompute the mikan->scene transform now that the anchors are up to date
-	RecomputeMikanToSceneTransform();
-
-	// Finally, update scene transform on all registered scene anchors
-	for (UMikanAnchorComponent* SceneAnchor : SceneAnchors)
-	{
-		SceneAnchor->FetchAnchorInfo();
-	}
+	QuadStencils.Empty();
 }
 
-void AMikanScene::HandleAnchorPoseChanged(const MikanAnchorPoseUpdateEvent& AnchorPoseEvent)
+void AMikanScene::DespawnAllBoxStencils()
 {
-	FMikanAnchorInfo* SceneAnchorInfo= GetMikanAnchorInfoById(AnchorPoseEvent.anchor_id);
-
-	if (SceneAnchorInfo != nullptr)
+	for (auto& Elem : BoxStencils)
 	{
-		// Update the scene anchor transform from the event
-		const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
-		SceneAnchorInfo->MikanSpaceTransform =
-			FMikanMath::MikanTransformToFTransform(AnchorPoseEvent.transform, MetersToUU);
+		AMikanStencilActor* Stencil = Elem.Value;
 
-		// Update all transforms associated anchor components ()
-		for (UMikanAnchorComponent* Anchor : SceneAnchors)
+		if (Stencil != nullptr)
 		{
-			Anchor->UpdateSceneTransform();
+			Stencil->Destroy();
 		}
 	}
+	BoxStencils.Empty();
 }
 
-void AMikanScene::HandleCameraIntrinsicsChanged()
+void AMikanScene::DespawnAllModelStencils()
 {
-	AMikanCamera* MikanCamera = GetMikanCamera();
-
-	if (MikanCamera != nullptr)
+	for (auto& Elem : ModelStencils)
 	{
-		MikanCamera->HandleCameraIntrinsicsChanged();
-	}
-}
+		AMikanStencilActor* Stencil = Elem.Value;
 
-void AMikanScene::HandleCameraAttachmentChanged()
-{
-	MikanVideoSourceAttachmentInfo AttachInfo;
-	if (Mikan_GetVideoSourceAttachment(&AttachInfo) == MikanResult_Success)
-	{
-		MikanSceneScale = AttachInfo.camera_scale;
-		RecomputeMikanToSceneTransform();
-	}
-}
-
-void AMikanScene::HandleNewVideoSourceFrame(const MikanVideoSourceNewFrameEvent& newFrameEvent)
-{
-	AMikanCamera* MikanCamera= GetMikanCamera();
-
-	if (MikanCamera != nullptr)
-	{
-		UWorld* World = GetWorld();
-
-		MikanVector3f MikanCameraForward= newFrameEvent.cameraForward;
-		MikanVector3f MikanCameraUp= newFrameEvent.cameraUp;
-		MikanVector3f MikanCameraPosition= newFrameEvent.cameraPosition;
-
-		static bool bDebug= false;
-		static float offset= 0.5f;
-		if (bDebug)
+		if (Stencil != nullptr)
 		{
-			MikanCameraForward= {0.f, 0.f, 1.f};
-			MikanCameraUp= {0.f, 1.f, 0.f};
-			MikanCameraPosition= {0.f, 0.f, -offset};
-		}
-
-		// Compute the camera transform in Mikan Space (but in Unreal coordinate system and units)
-		const float MetersToUU = World->GetWorldSettings()->WorldToMeters;
-		const FVector UECameraPosition = FMikanMath::MikanVector3fToFVector(MikanCameraPosition) * MetersToUU;
-		const FVector UECameraForward = FMikanMath::MikanVector3fToFVector(MikanCameraForward);
-		const FVector UECameraUp = FMikanMath::MikanVector3fToFVector(MikanCameraUp);
-		const FQuat UECameraQuat = FRotationMatrix::MakeFromXZ(UECameraForward, UECameraUp).ToQuat();
-		const FTransform UECameraTransform(UECameraQuat, UECameraPosition);
-
-		// Compute the Scene space camera transform
-		const FTransform SceneCameraTransform = UECameraTransform * MikanToSceneTransform;
-
-		// Update the scene camera transform
-		MikanCamera->SetActorRelativeTransform(SceneCameraTransform);
-
-		// Render out a new frame at the update camera transform
-		MikanCamera->MikanCaptureComponent->CaptureFrame(newFrameEvent.frame);
-	}
-}
-
-void AMikanScene::RecomputeMikanToSceneTransform()
-{
-	const FVector CameraScale3D = FVector::OneVector * MikanSceneScale;
-	const FTransform CameraScaleTransform = FTransform(FQuat::Identity, FVector::ZeroVector, CameraScale3D);
-
-	// Get the scene origin anchor, if any given
-	const FMikanAnchorInfo* OriginAnchorInfo = GetMikanAnchorInfoByName(SceneOriginAnchorName);
-
-	if (OriginAnchorInfo != nullptr)
-	{
-		// Undo the origin anchor transform, then apply camera scale
-		MikanToSceneTransform = OriginAnchorInfo->MikanSpaceTransform.Inverse() * CameraScaleTransform;
-	}
-	else
-	{
-		// Just apply the camera scale
-		MikanToSceneTransform = CameraScaleTransform;
-	}
-}
-
-void AMikanScene::RebuildSceneAnchorList()
-{
-	SceneAnchors.Reset();
-
-	for (USceneComponent* AttachedChild : SceneOrigin->GetAttachChildren())
-	{
-		UMikanAnchorComponent* AttachedAnchor= Cast<UMikanAnchorComponent>(AttachedChild);
-
-		if (AttachedAnchor != nullptr)
-		{
-			SceneAnchors.Add(AttachedAnchor);
+			Stencil->Destroy();
 		}
 	}
+	ModelStencils.Empty();
 }
 
-void AMikanScene::BindSceneCamera()
-{
-	SceneCamera= nullptr;
-
-	for (USceneComponent* AttachedChild : SceneOrigin->GetAttachChildren())
-	{
-		UMikanCaptureComponent* AttachedCamera = Cast<UMikanCaptureComponent>(AttachedChild);
-
-		if (AttachedCamera != nullptr)
-		{
-			SceneCamera= Cast<AMikanCamera>(AttachedCamera->GetOwner());
-		}
-	}
-}
-
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION

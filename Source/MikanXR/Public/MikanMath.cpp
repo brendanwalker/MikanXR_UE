@@ -27,15 +27,20 @@ FTransform FMikanMath::MikanTransformToFTransform(
 
 FQuat FMikanMath::MikanQuatToFQuat(const MikanQuatf& q)
 {
-	return FQuat(q.x, q.z, q.y, q.w);
+	return FQuat(-q.x, -q.z, -q.y, q.w);
 }
 
 MikanVector3f FMikanMath::FVectorToMikanVector3f(const FVector& v)
 {
-	return {v.X, v.Z, v.Y};
+	return {(float)v.X, (float)v.Z, (float)v.Y};
 }
 
 FVector FMikanMath::MikanVector3fToFVector(const MikanVector3f& v)
 {
 	return FVector(v.x, v.z, v.y);
+}
+
+FVector2D FMikanMath::MikanVector2fToFVector2D(const MikanVector2f& v)
+{
+	return FVector2D(v.x, v.y);
 }

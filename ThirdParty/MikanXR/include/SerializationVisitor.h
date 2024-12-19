@@ -3,6 +3,8 @@
 #include "SerializationExport.h"
 
 #include <string>
+#include <vector>
+
 #include "assert.h"
 
 namespace rfk
@@ -17,6 +19,8 @@ namespace rfk
 
 namespace Serialization
 {
+	using FieldList = std::vector<rfk::Field const*>;
+
 	class SERIALIZATION_API ValueAccessor	
 	{
 	public:

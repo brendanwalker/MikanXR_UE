@@ -16,6 +16,5 @@ using MikanSpatialAnchorID = int32_t;
 
 using MikanResponsePtr = std::shared_ptr<struct MikanResponse>;
 using MikanResponsePromise = std::promise<MikanResponsePtr>;
-using MikanResponseFuture = std::future<MikanResponsePtr>;
 
 using MikanEventPtr = std::shared_ptr<struct MikanEvent>;

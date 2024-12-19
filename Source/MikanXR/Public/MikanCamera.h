@@ -1,10 +1,12 @@
 #pragma once
 
 #include "GameFramework/Actor.h"
+#include "MikanAPITypes.h"
 #include "MikanClientTypes.h"
+#include "MikanVideoSourceTypes.h"
 #include "MikanCamera.generated.h"
 
-UCLASS(Blueprintable)
+UCLASS(BlueprintType, Blueprintable)
 class MIKANXR_API AMikanCamera : public AActor
 {
 	GENERATED_BODY()
@@ -12,23 +14,52 @@ class MIKANXR_API AMikanCamera : public AActor
 public:
 	AMikanCamera(const FObjectInitializer& ObjectInitializer);
 
+	virtual void PostInitializeComponents() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds ) override;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	class USceneComponent* CameraRoot;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Components")
-	class UMikanCaptureComponent* MikanCaptureComponent;
+	class UMikanCaptureComponent* ColorCaptureComponent;
 
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Components")
-	class UTextureRenderTarget2D* RenderTarget;
+	class UTextureRenderTarget2D* ColorRenderTarget;
 
-	void HandleCameraIntrinsicsChanged();
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Components")
+	class UMikanCaptureComponent* DepthCaptureComponent;
 
-	void RecreateRenderTarget(const MikanRenderTargetDescriptor& InRTDdesc);
-	void DisposeRenderTarget();
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Components")
+	class UTextureRenderTarget2D* DepthRenderTarget;
+
+	UFUNCTION(BlueprintPure)
+	class AMikanScene* GetParentScene() const;
+
+	// Mikan API Events
+	UFUNCTION()
+	void HandleMikanConnected();
+	UFUNCTION()
+	void HandleMikanDisconnected();
+	UFUNCTION()
+	void HandleVideoSourceOpened();
+	UFUNCTION()
+	void HandleVideoSourceModeChanged();
+	UFUNCTION()
+	void HandleVideoSourceIntrinsicsChanged();
+	UFUNCTION()
+	void HandleNewVideoSourceFrame(int64 FrameIndex, const FTransform& SceneTransform);
 
 protected:
-	MikanSpatialAnchorID CameraParentAnchorId = INVALID_MIKAN_ID;
-	float MikanCameraScale = 1.f;
-	MikanRenderTargetDescriptor RTDdesc;
-	uint64 LastReceivedVideoSourceFrame;
+	void ReallocateRenderBuffers();
+	void FreeRenderBuffers();
+	void RecreateRenderTargets(const MikanRenderTargetDescriptor& InRTDdesc);
+	void DisposeRenderTargets();
+	
+protected:
+	class IMikanAPI* MikanAPI= nullptr;
+	MikanClientInfo ClientInfo;
+	MikanMonoIntrinsics MonoIntrinsics;
+	MikanRenderTargetDescriptor RenderTargetDesc;
+	uint64 LastRenderedFrameIndex = 0;
 };
