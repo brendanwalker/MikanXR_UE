@@ -57,7 +57,7 @@ private:
 	void InvokeEditorSpawn();
 	
 	// Editor object.
-	class UMikanXREditorBase* Editor;
+	TObjectPtr<class UMikanXREditorBase> Editor;
 
 	// DockTab reference with the editor.
 	TWeakPtr<class SDockTab> EditorTab;

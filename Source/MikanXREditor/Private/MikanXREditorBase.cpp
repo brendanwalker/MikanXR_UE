@@ -29,7 +29,9 @@ UEditorUtilityWidgetBlueprint* UMikanXREditorBase::GetUtilityWidgetBlueprint()
 {
 	// Get the Editor Utility Widget Blueprint from the content directory.
 	IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
-	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath("/MikanXR/MikanXRWidget_BP.MikanXRWidget_BP");
+	FAssetData AssetData =
+		AssetRegistry.GetAssetByObjectPath(
+			FSoftObjectPath("/MikanXR/MikanXRWidget_BP.MikanXRWidget_BP"));
 	return Cast<UEditorUtilityWidgetBlueprint>(AssetData.GetAsset());
 }
 

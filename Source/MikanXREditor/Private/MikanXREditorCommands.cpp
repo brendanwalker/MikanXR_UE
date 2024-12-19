@@ -1,14 +1,14 @@
 // Copyright (c)  2023 Brendan Walker. All rights reserved.
 
 #include "MikanXREditorCommands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 FMikanXREditorCommands::FMikanXREditorCommands() :
 	TCommands<FMikanXREditorCommands>(
 		TEXT("MikanXR Commands"), 
 		FText::FromString(TEXT("Commands to control Mikan XR")), 
 		NAME_None, 
-		FEditorStyle::GetStyleSetName()
+		FAppStyle::GetAppStyleSetName()
 	)
 {}
 
