@@ -16,6 +16,12 @@ namespace rfk
 
 namespace Serialization NAMESPACE()
 {
+	using MikanClassId = int64_t;
+	using RfkClassId = std::size_t;
+
+	SERIALIZATION_API MikanClassId toMikanClassId(RfkClassId classId);
+	SERIALIZATION_API RfkClassId toRfkClassId(MikanClassId classId);
+
 	template <class t_base_class>
 	class CLASS() ObjectPtr
 	{
@@ -27,7 +33,7 @@ namespace Serialization NAMESPACE()
 		// (needed for fetching the runtime class id)
 		#ifdef SERIALIZATION_REFLECTION_ENABLED
 		template <class t_derived_class>
-		ObjectPtr(std::shared_ptr<t_derived_class>&objectPtr)
+		ObjectPtr(std::shared_ptr<t_derived_class>& objectPtr)
 		{
 			setSharedPointer(objectPtr);
 		}
@@ -62,17 +68,17 @@ namespace Serialization NAMESPACE()
 		// * When we are generating the serialization reflection code
 		#if defined(ENABLE_SERIALIZATION_REFLECTION) || defined(KODGEN_PARSING)
 		METHOD()
-		void* allocate(const std::size_t&& classId)
+		void* allocate(const std::size_t&& rfkClassId)
 		{
 			// If we are generating the serialization reflection code, we don't want to include Refureku
 			// Just need the function signature to exist
 			#ifndef KODGEN_PARSING
-			rfk::Struct const* objectClass = rfk::getDatabase().getStructById(classId);
+			rfk::Struct const* objectClass = rfk::getDatabase().getStructById(rfkClassId);
 
 			if (objectClass != nullptr)
 			{
 				m_objectPtr= objectClass->makeSharedInstance<t_base_class>();
-				m_runtimeClassId = classId;
+				m_runtimeClassId = rfkClassId;
 
 				return m_objectPtr.get();
 			}
@@ -87,7 +93,7 @@ namespace Serialization NAMESPACE()
 		#endif
 
 	private:
-		std::size_t m_runtimeClassId = 0;
+		RfkClassId m_runtimeClassId = 0;
 		std::shared_ptr<t_base_class> m_objectPtr;
 	};
 };

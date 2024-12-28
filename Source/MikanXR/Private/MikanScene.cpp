@@ -150,7 +150,7 @@ void AMikanScene::HandleAnchorListChanged()
 
 	// Fetch the list of spatial anchors from Mikan and apply them to the scene
 	GetSpatialAnchorList listRequest;
-	auto listResponse= MikanAPI->sendRequest(listRequest).get();
+	auto listResponse= MikanAPI->sendRequest(listRequest).fetchResponse();
 	if (listResponse->resultCode == MikanAPIResult::Success)
 	{
 		auto SpatialAnchorList= std::static_pointer_cast<MikanSpatialAnchorListResponse>(listResponse);
@@ -162,7 +162,7 @@ void AMikanScene::HandleAnchorListChanged()
 			GetSpatialAnchorInfo anchorRequest;
 			anchorRequest.anchorId= AnchorId;
 
-			auto anchorResponse= MikanAPI->sendRequest(anchorRequest).get();
+			auto anchorResponse= MikanAPI->sendRequest(anchorRequest).fetchResponse();
 			if (anchorResponse->resultCode == MikanAPIResult::Success)
 			{
 				auto MikanAnchorResponse= std::static_pointer_cast<MikanSpatialAnchorInfoResponse>(anchorResponse);
@@ -180,7 +180,7 @@ void AMikanScene::HandleAnchorNameChanged(
 	GetSpatialAnchorInfo anchorRequest;
 	anchorRequest.anchorId= AnchorID;
 
-	auto anchorResponse = MikanAPI->sendRequest(anchorRequest).get();
+	auto anchorResponse = MikanAPI->sendRequest(anchorRequest).fetchResponse();
 	if (anchorResponse->resultCode == MikanAPIResult::Success)
 	{
 		auto MikanAnchorResponse = std::static_pointer_cast<MikanSpatialAnchorInfoResponse>(anchorResponse);
@@ -260,7 +260,7 @@ void AMikanScene::HandleQuadStencilListChanged()
 	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
 
 	GetQuadStencilList quadStencilListRequest;
-	auto listResponse = MikanAPI->sendRequest(quadStencilListRequest).get();
+	auto listResponse = MikanAPI->sendRequest(quadStencilListRequest).fetchResponse();
 	if (listResponse->resultCode == MikanAPIResult::Success)
 	{
 		auto QuadStencilList = std::static_pointer_cast<MikanStencilListResponse>(listResponse);
@@ -294,7 +294,7 @@ void AMikanScene::HandleQuadStencilListChanged()
 			GetQuadStencil quadStencilRequest;
 			quadStencilRequest.stencilId= StencilID;
 
-			auto Response = MikanAPI->sendRequest(quadStencilRequest).get();
+			auto Response = MikanAPI->sendRequest(quadStencilRequest).fetchResponse();
 			if (Response->resultCode == MikanAPIResult::Success)
 			{
 				auto StencilResponse = std::static_pointer_cast<MikanStencilQuadInfoResponse>(Response);
@@ -322,7 +322,7 @@ void AMikanScene::HandleQuadStencilListChanged()
 void AMikanScene::HandleBoxStencilListChanged()
 {
 	GetBoxStencilList listRequest;
-	auto listResponse = MikanAPI->sendRequest(listRequest).get();
+	auto listResponse = MikanAPI->sendRequest(listRequest).fetchResponse();
 	if (listResponse->resultCode == MikanAPIResult::Success)
 	{
 		auto BoxStencilList = std::static_pointer_cast<MikanStencilListResponse>(listResponse);
@@ -356,7 +356,7 @@ void AMikanScene::HandleBoxStencilListChanged()
 			GetBoxStencil StencilRequest;
 			StencilRequest.stencilId = StencilID;
 
-			auto Response = MikanAPI->sendRequest(StencilRequest).get();
+			auto Response = MikanAPI->sendRequest(StencilRequest).fetchResponse();
 			if (Response->resultCode == MikanAPIResult::Success)
 			{
 				auto StencilResponse = std::static_pointer_cast<MikanStencilBoxInfoResponse>(Response);
@@ -386,7 +386,7 @@ void AMikanScene::HandleBoxStencilListChanged()
 void AMikanScene::HandleModelStencilListChanged()
 {
 	GetModelStencilList listRequest;
-	auto listResponse= MikanAPI->sendRequest(listRequest).get();
+	auto listResponse= MikanAPI->sendRequest(listRequest).fetchResponse();
 	if (listResponse->resultCode == MikanAPIResult::Success)
 	{
 		auto ModelStencilList= std::static_pointer_cast<MikanStencilListResponse>(listResponse);
@@ -420,7 +420,7 @@ void AMikanScene::HandleModelStencilListChanged()
 			GetModelStencil StencilRequest;
 			StencilRequest.stencilId= StencilID;
 
-			auto Response= MikanAPI->sendRequest(StencilRequest).get();
+			auto Response= MikanAPI->sendRequest(StencilRequest).fetchResponse();
 			if (Response->resultCode == MikanAPIResult::Success)
 			{
 				auto StencilResponse= std::static_pointer_cast<MikanStencilModelInfoResponse>(Response);

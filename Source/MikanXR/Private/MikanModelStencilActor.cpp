@@ -61,7 +61,7 @@ void AMikanModelStencilActor::RefetchModelRenderGeometry()
 	GetModelStencilRenderGeometry request;
 	request.stencilId = GetStencilId();
 
-	auto Response = MikanAPI->sendRequest(request).get();
+	auto Response = MikanAPI->sendRequest(request).fetchResponse();
 	if (Response->resultCode == MikanAPIResult::Success)
 	{
 		auto MeshResponse = std::static_pointer_cast<MikanStencilModelRenderGeometryResponse>(Response);

@@ -20,7 +20,19 @@ public:
 	MikanResponseFuture& operator=(const MikanResponseFuture&) = delete;
 
 	bool isValid() const { return m_impl != nullptr; }
-	MikanResponsePtr get(uint32_t timeoutMilliseconds = MIKAN_TIMEOUT_DEFAULT);
+	bool isCompleted() const;
+
+	// Non-Blocking Response Fetch
+	// Return true if the response is ready, false otherwise
+	bool tryFetchResponse(MikanResponsePtr& outResponse);
+
+	// Non-Blocking Response Fetch
+	// Return true if the response is ready, false otherwise
+	MikanResponsePtr fetchResponse(uint32_t timeoutMilliseconds = MIKAN_TIMEOUT_DEFAULT);
+
+	// Blocking Response Await
+	// Returns once the response has been received or the timeout is reached
+	void awaitResponse(uint32_t timeoutMilliseconds = MIKAN_TIMEOUT_DEFAULT);
 
 protected:
 	static MikanResponsePtr makeSimpleMikanResponse(MikanAPIResult result);

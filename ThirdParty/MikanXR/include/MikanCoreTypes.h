@@ -12,6 +12,13 @@
 
 #define INVALID_MIKAN_ID				-1
 
+/// Result enum in response to a client API request
+enum ENUM(Serialization::CodeGenModule("MikanCoreConstants")) MikanConstants
+{
+	MikanConstants_InvalidMikanID ENUMVALUE_STRING("InvalidMikanID") = -1,
+	MikanConstants_ClientAPIVersion ENUMVALUE_STRING("ClientAPIVersion") = 0,
+};
+
 /// Result enum for Client Core API
 /// These values must remain stable across all versions of the API
 enum ENUM(Serialization::CodeGenModule("MikanCoreConstants")) MikanCoreResult

@@ -24,6 +24,9 @@ struct STRUCT(Serialization::CodeGenModule("MikanClientEvents")) MikanConnectedE
 	FIELD()
 	MikanClientAPIVersion minClientVersion;
 
+	FIELD()
+	bool isClientCompatible;
+
 	#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanConnectedEvent_GENERATED
 	#endif

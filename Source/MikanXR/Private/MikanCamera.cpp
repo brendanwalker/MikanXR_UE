@@ -120,7 +120,7 @@ void AMikanCamera::HandleVideoSourceModeChanged()
 void AMikanCamera::HandleVideoSourceIntrinsicsChanged()
 {
 	GetVideoSourceIntrinsics request;
-	auto Response= MikanAPI->sendRequest(request).get();
+	auto Response= MikanAPI->sendRequest(request).fetchResponse();
 	if (Response->resultCode == MikanAPIResult::Success)
 	{
 		auto VideoIntrinsicsResponse= std::static_pointer_cast<MikanVideoSourceIntrinsicsResponse>(Response);
@@ -222,7 +222,7 @@ void AMikanCamera::ReallocateRenderBuffers()
 
 	// Fetch the video source information from Mikan
 	GetVideoSourceMode request;
-	auto Response= MikanAPI->sendRequest(request).get();
+	auto Response= MikanAPI->sendRequest(request).fetchResponse();
 	if (Response->resultCode == MikanAPIResult::Success)
 	{
 		auto ModeResponse= std::static_pointer_cast<MikanVideoSourceModeResponse>(Response);
@@ -237,7 +237,7 @@ void AMikanCamera::ReallocateRenderBuffers()
 		AllocateRenderTargetTextures allocateRequest;
 		allocateRequest.descriptor = RenderTargetDesc;
 
-		auto AllocateResponse= MikanAPI->sendRequest(allocateRequest).get();
+		auto AllocateResponse= MikanAPI->sendRequest(allocateRequest).fetchResponse();
 		if (AllocateResponse->resultCode == MikanAPIResult::Success)
 		{
 			// Tell the active scene camera to recreate a matching render target

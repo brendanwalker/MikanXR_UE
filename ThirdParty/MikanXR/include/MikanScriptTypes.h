@@ -11,6 +11,7 @@
 // Script Event Types
 struct STRUCT(Serialization::CodeGenModule("MikanScriptTypes")) MikanScriptMessageInfo 
 {
+	FIELD()
 	Serialization::String content;
 
 	#ifdef MIKANAPI_REFLECTION_ENABLED

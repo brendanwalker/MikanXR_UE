@@ -75,7 +75,7 @@ public:
 	}
 
 	FIELD()
-	uint64_t frameIndex= 0;
+	int64_t frameIndex= 0;
 
 	#ifdef MIKANAPI_REFLECTION_ENABLED
 	PublishRenderTargetTextures_GENERATED

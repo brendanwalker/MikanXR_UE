@@ -167,7 +167,7 @@ void FMikanXRModule::DisconnectSubsystem(UMikanWorldSubsystem* Subsystem)
 		if (MikanAPI->getIsConnected())
 		{
 			DisposeClientRequest disposeRequest = {};
-			MikanAPI->sendRequest(disposeRequest).get();
+			MikanAPI->sendRequest(disposeRequest).awaitResponse();
 
 			MikanAPI->disconnect();
 		}
@@ -195,7 +195,7 @@ bool FMikanXRModule::Tick(float DeltaTime)
 					InitClientRequest initClientRequest = {};
 					initClientRequest.clientInfo = ClientInfo;
 
-					MikanAPI->sendRequest(initClientRequest).get();
+					MikanAPI->sendRequest(initClientRequest).awaitResponse();
 				}
 				else if (typeid(*mikanEvent) == typeid(MikanDisconnectedEvent))
 				{

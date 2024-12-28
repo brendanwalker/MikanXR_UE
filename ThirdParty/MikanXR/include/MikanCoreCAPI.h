@@ -14,8 +14,6 @@ MIKAN_CORE_CAPI(MikanCoreResult) Mikan_Initialize(
 	MikanLogCallback log_callback, 
 	MikanContext* outContext);
 
-MIKAN_CORE_CAPI(int) Mikan_GetClientAPIVersion();
-
 MIKAN_CORE_CAPI(const char *) Mikan_GetClientUniqueID(MikanContext context);
 
 MIKAN_CORE_CAPI(bool) Mikan_GetIsInitialized(MikanContext context);
@@ -100,4 +98,4 @@ MIKAN_CORE_CAPI(MikanCoreResult) Mikan_SetBinaryResponseCallback(
  Free the resources allocated by the MikanXR Client API.
  Calling this function again after the api already cleaned up will return MikanCoreResult_Uninitialized.
  */
-MIKAN_CORE_CAPI(MikanCoreResult) Mikan_Shutdown(MikanContext* context);
+MIKAN_CORE_CAPI(MikanCoreResult) Mikan_Shutdown(MikanContext context);

@@ -51,7 +51,7 @@ struct STRUCT(Serialization::CodeGenModule("MikanVideoSourceEvents")) MikanVideo
 	FIELD()
 	MikanVector3f cameraPosition;
 	FIELD()
-	uint64_t frame;
+	int64_t frame;
 
 	#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanVideoSourceNewFrameEvent_GENERATED

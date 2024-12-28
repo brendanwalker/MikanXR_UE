@@ -14,8 +14,6 @@
 struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanClientTypes")) MikanClientInfo
 {
 	FIELD()
-	MikanClientAPIVersion apiVersion;
-	FIELD()
 	Serialization::String clientId;
 	FIELD()
 	Serialization::String engineName;
@@ -30,13 +28,13 @@ struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanClientTypes")) MikanC
 	FIELD()
 	MikanClientGraphicsApi graphicsAPI;
 	FIELD()
-	bool supportsRGB24;
+	bool supportsRGB24= false;
 	FIELD()
-	bool supportsRGBA32;
+	bool supportsRGBA32= false;
 	FIELD()
-	bool supportsBGRA32;
+	bool supportsBGRA32= false;
 	FIELD()
-	bool supportsDepth;
+	bool supportsDepth= false;
 
 	#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanClientInfo_GENERATED

@@ -22,7 +22,7 @@ struct STRUCT(Serialization::CodeGenModule("MikanVRDeviceEvents")) MikanVRDevice
 	FIELD()
 	MikanVRDeviceID device_id;
 	FIELD()
-	uint64_t frame;
+	int64_t frame;
 
 	#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanVRDevicePoseUpdateEvent_GENERATED
