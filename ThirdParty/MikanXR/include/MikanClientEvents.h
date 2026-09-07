@@ -11,43 +11,32 @@
 #include "MikanClientEvents.rfkh.h"
 #endif
 
-struct STRUCT(Serialization::CodeGenModule("MikanClientEvents")) MikanConnectedEvent : public MikanEvent
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanClientEvents")) MikanConnectedEvent : public MikanEvent
 {
-	MikanConnectedEvent()
-	{
-		MIKAN_EVENT_TYPE_INFO_INIT(MikanConnectedEvent)
-	}
+	MikanConnectedEvent(){MIKAN_EVENT_TYPE_INFO_INIT(MikanConnectedEvent)}
 
-	FIELD()
-	MikanClientAPIVersion serverVersion;
+	FIELD() MikanClientAPIVersion serverVersion;
 
-	FIELD()
-	MikanClientAPIVersion minClientVersion;
+	FIELD() MikanClientAPIVersion minClientVersion;
 
-	FIELD()
-	bool isClientCompatible;
+	FIELD() bool isClientCompatible= false;
 
-	#ifdef MIKANAPI_REFLECTION_ENABLED
+#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanConnectedEvent_GENERATED
-	#endif
+#endif
 };
 
-struct STRUCT(Serialization::CodeGenModule("MikanClientEvents")) MikanDisconnectedEvent : public MikanEvent
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanClientEvents")) MikanDisconnectedEvent : public MikanEvent
 {
-	MikanDisconnectedEvent()
-	{
-		MIKAN_EVENT_TYPE_INFO_INIT(MikanDisconnectedEvent)
-	}
+	MikanDisconnectedEvent(){MIKAN_EVENT_TYPE_INFO_INIT(MikanDisconnectedEvent)}
 
-	FIELD()
-	MikanDisconnectCode code;
+	FIELD() MikanDisconnectCode code= MikanDisconnectCode::MikanDisconnectCode_Normal;
 
-	FIELD()
-	Serialization::String reason;
+	FIELD() Serialization::String reason;
 
-	#ifdef MIKANAPI_REFLECTION_ENABLED
+#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanDisconnectedEvent_GENERATED
-	#endif
+#endif
 };
 
 #ifdef MIKANAPI_REFLECTION_ENABLED

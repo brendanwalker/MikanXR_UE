@@ -1,11 +1,55 @@
 #include "MikanQuadStencilActor.h"
-#include "MikanCamera.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/WorldSettings.h"
 #include "MikanMath.h"
-#include "MikanScene.h"
+#include "MikanSceneActor.h"
 #include "MikanStencilTypes.h"
-#include "MikanStencilComponent.h"
+#include "DrawDebugHelpers.h"
 
+// -- UMikanQuadStencilData -----
+void UMikanQuadStencilData::Initialize(const Serialization::PolymorphicObjectPtr& InValuesObject)
+{
+	UMikanStencilData::Initialize(InValuesObject);
+
+	const auto* QuadStencilValues = InValuesObject.getTypedPointer<MikanQuadStencilComponentValues>();
+	QuadWidth = QuadStencilValues->quad_width;
+	QuadHeight = QuadStencilValues->quad_height;
+	bIsDoubleSided = QuadStencilValues->is_double_sided;
+}
+
+bool UMikanQuadStencilData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
+{
+	if (FieldName == "quad_width")
+	{
+		QuadWidth = FieldValue.getFloatValue();
+		return true;
+	}
+	else if (FieldName == "quad_height")
+	{
+		QuadHeight = FieldValue.getFloatValue();
+		return true;
+	}
+	else if (FieldName == "is_double_sided")
+	{
+		bIsDoubleSided = FieldValue.getBoolValue();
+		return true;
+	}
+	else
+	{
+		return UMikanStencilData::ApplyMikanValue(FieldName, FieldValue);
+	}
+}
+
+void UMikanQuadStencilData::Describe(TArray<FString>& OutLines) const
+{
+	UMikanStencilData::Describe(OutLines);
+	Mikan::AppendDescribeLine(OutLines, TEXT("quad_width"), QuadWidth);
+	Mikan::AppendDescribeLine(OutLines, TEXT("quad_height"), QuadHeight);
+	Mikan::AppendDescribeLine(OutLines, TEXT("is_double_sided"), bIsDoubleSided);
+}
+
+// -- AMikanQuadStencilActor -----
 AMikanQuadStencilActor::AMikanQuadStencilActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -19,41 +63,20 @@ void AMikanQuadStencilActor::Tick(float DeltaSeconds)
 	FVector Center = GetActorLocation();
 	FRotator Rot = GetActorRotation();
 	FVector Extent = FVector(QuadSize.X, QuadSize.Y, 1.0f);
+
 	DrawDebugBox(GetWorld(), Center, Extent, Rot.Quaternion(), FColor::Yellow);
 }
 
-AMikanQuadStencilActor* AMikanQuadStencilActor::SpawnStencil(
-	AMikanScene* OwnerScene,
-	const MikanStencilQuadInfo& QuadStencilInfo)
+void AMikanQuadStencilActor::BindMikanComponentData(UMikanComponentData* Data)
 {
-	// Spawn a new stencil
-	FActorSpawnParameters SpawnParameters;
-	SpawnParameters.Name = *FString::Printf(TEXT("QuadStencil_%d"), QuadStencilInfo.stencil_id);
-	SpawnParameters.Owner = OwnerScene;
+	Super::BindMikanComponentData(Data);
 
-	// Spawn the stencil actor
-	UWorld* World = OwnerScene->GetWorld();
-	AMikanQuadStencilActor* NewStencil = 
-		World->SpawnActor<AMikanQuadStencilActor>(
-			AMikanQuadStencilActor::StaticClass(), 
-			FTransform::Identity, 
-			SpawnParameters);
+	if (auto* QuadShapeData = Cast<UMikanQuadStencilData>(Data))
+	{
+		const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
 
-	NewStencil->AttachToActor(OwnerScene, FAttachmentTransformRules::SnapToTargetIncludingScale);
-	NewStencil->ApplyQuadStencilInfo(QuadStencilInfo);
-
-	return NewStencil;
-}
-
-void AMikanQuadStencilActor::ApplyQuadStencilInfo(const MikanStencilQuadInfo& InStencilInfo)
-{
-	StencilComponent->ApplyStencilInfo(
-		InStencilInfo.stencil_id,
-		InStencilInfo.stencil_name.getValue(),
-		InStencilInfo.relative_transform);
-
-	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
-	QuadSize= FVector2D(
-		InStencilInfo.quad_width * 0.5f * MetersToUU,
-		InStencilInfo.quad_height * 0.5f * MetersToUU);
+		QuadSize = FVector2D(
+			QuadShapeData->GetQuadWidth() * 0.5f * MetersToUU,
+			QuadShapeData->GetQuadHeight() * 0.5f * MetersToUU);
+	}
 }

@@ -1,59 +1,18 @@
 #include "MikanAnchorActor.h"
-#include "MikanCamera.h"
-#include "Engine/Engine.h"
-#include "MikanScene.h"
-#include "MikanAnchorComponent.h"
-#include "Components/TextRenderComponent.h"
+#include "MikanAnchorTypes.h"
+#include "DrawDebugHelpers.h"
 
 AMikanAnchorActor::AMikanAnchorActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	PrimaryActorTick.bCanEverTick = true;
-
-	AnchorComponent = CreateDefaultSubobject<UMikanAnchorComponent>(TEXT("Anchor"));
-	RootComponent = AnchorComponent;
-	
-	LabelComponent = CreateDefaultSubobject<UTextRenderComponent>(TEXT("Label"));;
-	LabelComponent->SetupAttachment(RootComponent);
-	LabelComponent->SetHorizontalAlignment(EHTA_Center);
 }
 
-AMikanScene* AMikanAnchorActor::GetParentScene() const
+void AMikanAnchorActor::Tick(float DeltaSeconds)
 {
-	USceneComponent* AttachParentComponent = RootComponent->GetAttachParent();
+	Super::Tick(DeltaSeconds);
 
-	if (AttachParentComponent != nullptr)
-	{
-		return Cast<AMikanScene>(AttachParentComponent->GetOwner());
-	}
-
-	return nullptr;
+	// Draw coordinate axes to visualize anchor position and orientation
+	const float AxisLength = 50.f;
+	DrawDebugCoordinateSystem(GetWorld(), GetActorLocation(), GetActorRotation(), AxisLength);
 }
 
-int32 AMikanAnchorActor::GetAnchorId() const
-{
-	return AnchorComponent->AnchorId;
-}
-
-const FString& AMikanAnchorActor::GetAnchorName() const
-{
-	return AnchorComponent->AnchorName;
-}
-
-void AMikanAnchorActor::UnbindAnchorId()
-{
-	AnchorComponent->AnchorId = -1;
-}
-
-void AMikanAnchorActor::ApplyAnchorInfo(const struct MikanSpatialAnchorInfo& InAnchorInfo)
-{
-	AnchorComponent->ApplyAnchorInfo(
-		InAnchorInfo.anchor_id,
-		InAnchorInfo.world_transform);
-	UpdateLabelText();
-}
-
-void AMikanAnchorActor::UpdateLabelText()
-{
-	LabelComponent->SetText(FText::FromString(AnchorComponent->AnchorName));
-}

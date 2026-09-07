@@ -10,19 +10,16 @@
 #include "MikanScriptEvents.rfkh.h"
 #endif
 
-struct STRUCT(Serialization::CodeGenModule("MikanScriptEvents")) MikanScriptMessagePostedEvent : public MikanEvent
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanScriptEvents")) MikanScriptMessagePostedEvent
+	: public MikanEvent
 {
-	MikanScriptMessagePostedEvent()
-	{
-		MIKAN_EVENT_TYPE_INFO_INIT(MikanScriptMessagePostedEvent)
-	}
+	MikanScriptMessagePostedEvent(){MIKAN_EVENT_TYPE_INFO_INIT(MikanScriptMessagePostedEvent)}
 
-	FIELD()
-	Serialization::String message;
+	FIELD() Serialization::String message;
 
-	#ifdef MIKANAPI_REFLECTION_ENABLED
+#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanScriptMessagePostedEvent_GENERATED
-	#endif
+#endif
 };
 
 #ifdef MIKANAPI_REFLECTION_ENABLED

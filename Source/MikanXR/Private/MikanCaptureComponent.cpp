@@ -1,11 +1,24 @@
 #include "MikanCaptureComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Materials/Material.h"
-#include "MikanWorldSubsystem.h"
+#include "MikanCameraRequests.h"
+#include "MikanCameraActor.h"
+#include "MikanClient.h"
 #include "MikanRenderTargetRequests.h"
 #include "MikanRenderableComponent.h"
+#include "MikanTransformActor.h"
 #include "MikanAPI.h"
+#include "MikanMath.h"
+#include "TextureResource.h"
+#include "RenderingThread.h"
+#include "RHICommandList.h"
+#include "RHIResources.h"
+
+FName UMikanCaptureComponent::MikanRenderColor = FName(TEXT("MikanRenderColor"));
+FName UMikanCaptureComponent::MikanRenderDepth = FName(TEXT("MikanRenderDepth"));
+FName UMikanCaptureComponent::MikanRenderShadow = FName(TEXT("MikanRenderShadow"));
 
 UMikanCaptureComponent::UMikanCaptureComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -36,16 +49,16 @@ void UMikanCaptureComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
-	if (MikanWorldSubsystem)
+	AMikanClient* MikanClient = GetOwnerMikanClient();
+	if (MikanClient)
 	{
-		MikanAPI = MikanWorldSubsystem->GetMikanAPI();
+		MikanAPI = MikanClient->GetMikanAPI();
 
-		MikanWorldSubsystem->OnRenderableRegistered.AddDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableRegistered);
-		MikanWorldSubsystem->OnRenderableUnregistered.AddDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableUnregistered);
+		MikanClient->OnRenderableRegistered.AddDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableRegistered);
+		MikanClient->OnRenderableUnregistered.AddDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableUnregistered);
 
 		// Register all existing renderables
-		const auto& ExistingRenderables= MikanWorldSubsystem->GetRegisteredMikanRenderables();
+		const auto& ExistingRenderables= MikanClient->GetRegisteredMikanRenderables();
 		for (UMikanRenderableComponent* Renderable : ExistingRenderables)
 		{
 			HandleMikanRenderableRegistered(Renderable);
@@ -55,11 +68,21 @@ void UMikanCaptureComponent::BeginPlay()
 
 void UMikanCaptureComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	auto* MikanWorldSubsystem = UMikanWorldSubsystem::GetInstance(GetWorld());
-	if (MikanWorldSubsystem)
+	AMikanClient* MikanClient = GetOwnerMikanClient();
+	if (MikanClient)
 	{
-		MikanWorldSubsystem->OnRenderableRegistered.RemoveDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableRegistered);
-		MikanWorldSubsystem->OnRenderableUnregistered.RemoveDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableUnregistered);
+		MikanClient->OnRenderableRegistered.RemoveDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableRegistered);
+		MikanClient->OnRenderableUnregistered.RemoveDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableUnregistered);
+	}
+
+	// Release the staging texture. We flush first so no in-flight render command still references it.
+	if (SharedStagingTexture.IsValid())
+	{
+		FlushRenderingCommands();
+		SharedStagingTexture.SafeRelease();
+		SharedStagingWidth = 0;
+		SharedStagingHeight = 0;
+		SharedStagingFormat = PF_Unknown;
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -75,73 +98,183 @@ void UMikanCaptureComponent::SetRenderTargetDesc(const MikanRenderTargetDescript
 	RenderTargetDesc= InRTDdesc;
 }
 
-void UMikanCaptureComponent::SetVideoSourceIntrinsics(const MikanMonoIntrinsics& InMonoIntrinsics)
+void UMikanCaptureComponent::SetCustomProjectionMatrix(const FMatrix& InProjectionMatrix)
 {
-	UWorld* World = GetWorld();
-	const float MetersToUU = World->GetWorldSettings()->WorldToMeters;
-	const float HalfXFOV = FMath::DegreesToRadians(InMonoIntrinsics.hfov) * 0.5f;
-	const float HalfYFOV = FMath::DegreesToRadians(InMonoIntrinsics.vfov) * 0.5f;
-	
-	NearClippingPlaneUU= InMonoIntrinsics.znear * MetersToUU;
-	FarClippingPlaneUU= InMonoIntrinsics.zfar * MetersToUU;
-
-	CustomProjectionMatrix= 
-		FReversedZPerspectiveMatrix(
-			HalfXFOV, HalfYFOV, 
-			1.0f, 1.0, // FOV scales
-			NearClippingPlaneUU, FarClippingPlaneUU);
+	CustomProjectionMatrix = InProjectionMatrix;
 	bUseCustomProjectionMatrix = true;
-
-	VideoSourceIntrinsics = InMonoIntrinsics;
 }
 
-void UMikanCaptureComponent::CaptureFrame(uint64 NewFrameIndex)
+void UMikanCaptureComponent::SetDepthClippingPlanes(
+	float InNearClippingPlaneUU,
+	float InFarClippingPlaneUU)
+{
+	NearClippingPlaneUU = InNearClippingPlaneUU;
+	FarClippingPlaneUU = InFarClippingPlaneUU;
+}
+
+void UMikanCaptureComponent::CaptureFrame()
 {
 	if (TextureTarget != nullptr)
 	{
+		// Enqueues the scene capture on the render thread. The GPU work is NOT finished when
+		// this returns, so we don't read the render target here - see PublishCapturedFrame().
 		CaptureScene();
+	}
+}
 
-		MikanClientGraphicsApi api = RenderTargetDesc.graphicsAPI;
-		if (api == MikanClientGraphicsApi_Direct3D9 ||
-			api == MikanClientGraphicsApi_Direct3D11 ||
-			api == MikanClientGraphicsApi_Direct3D12 ||
-			api == MikanClientGraphicsApi_OpenGL)
+void UMikanCaptureComponent::PublishCapturedFrame(int32 CameraId)
+{
+	PublishRenderTarget(CameraId, TextureTarget);
+}
+
+void UMikanCaptureComponent::PublishRenderTarget(int32 CameraId, UTextureRenderTarget2D* SourceTarget)
+{
+	if (SourceTarget == nullptr)
+	{
+		return;
+	}
+
+	MikanClientGraphicsApi api = RenderTargetDesc.graphicsAPI;
+	if (api != MikanClientGraphicsApi_Direct3D9 &&
+		api != MikanClientGraphicsApi_Direct3D11 &&
+		api != MikanClientGraphicsApi_Direct3D12 &&
+		api != MikanClientGraphicsApi_OpenGL)
+	{
+		return;
+	}
+
+	// Copy the captured render target into our dedicated staging texture and get its native
+	// handle. We hand Mikan this staging texture rather than the live render target so Unreal
+	// never re-renders into the resource Mikan has wrapped for Spout - that dual ownership of one
+	// resource's D3D12 state was the source of the "before state does not match" barrier errors
+	// and the residual flicker. UpdateSharedStagingTexture() also blocks until the GPU copy is
+	// complete, so Mikan reads a fully rendered, settled texture.
+	void* NativeTexturePtr = UpdateSharedStagingTexture(SourceTarget);
+	if (NativeTexturePtr == nullptr)
+	{
+		return;
+	}
+
+	switch (CaptureKind)
+	{
+	case EMikanCaptureKind::Color:
 		{
-			// TODO: I think this isn't thread safe and should be done in the render thread
-			// But I'm not sure how to enqueue a render command that happens AFTER the scene capture
-			// Currently if I try to enqueue a render command, I get frequent flicking
-			UTextureRenderTarget2D* RenderTarget2D = TextureTarget;
-			FTextureRenderTargetResource* TextureResource = RenderTarget2D->GameThread_GetRenderTargetResource();
-			if (TextureResource != nullptr)
+			WriteCameraColorRenderTargetTexture writeRequest;
+			writeRequest.camera_id = CameraId;
+			writeRequest.api_color_texture_ptr = NativeTexturePtr;
+
+			MikanAPI->sendRequest(writeRequest);
+		}
+		break;
+	case EMikanCaptureKind::Depth:
+		{
+			WriteCameraDepthRenderTargetTexture writeRequest;
+			writeRequest.camera_id = CameraId;
+			writeRequest.api_depth_texture_ptr = NativeTexturePtr;
+			writeRequest.z_near = NearClippingPlaneUU;
+			writeRequest.z_far = FarClippingPlaneUU;
+
+			MikanAPI->sendRequest(writeRequest);
+		}
+		break;
+	case EMikanCaptureKind::Shadow:
+		{
+			WriteCameraShadowRenderTargetTexture writeRequest;
+			writeRequest.camera_id = CameraId;
+			writeRequest.api_shadow_texture_ptr = NativeTexturePtr;
+
+			MikanAPI->sendRequest(writeRequest);
+		}
+		break;
+	}
+}
+
+void* UMikanCaptureComponent::UpdateSharedStagingTexture(UTextureRenderTarget2D* SourceTarget)
+{
+	if (SourceTarget == nullptr)
+	{
+		return nullptr;
+	}
+
+	FTextureRenderTargetResource* RTResource = SourceTarget->GameThread_GetRenderTargetResource();
+	if (RTResource == nullptr)
+	{
+		return nullptr;
+	}
+
+	const int32 Width = SourceTarget->SizeX;
+	const int32 Height = SourceTarget->SizeY;
+	const EPixelFormat Format = SourceTarget->GetFormat();
+	if (Width <= 0 || Height <= 0 || Format == PF_Unknown)
+	{
+		return nullptr;
+	}
+
+	ENQUEUE_RENDER_COMMAND(MikanCopyToSharedStaging)(
+		[this, RTResource, Width, Height, Format](FRHICommandListImmediate& RHICmdList)
+		{
+			// (Re)create the staging texture if it is missing or the size/format changed.
+			if (!SharedStagingTexture.IsValid()
+				|| SharedStagingWidth != Width
+				|| SharedStagingHeight != Height
+				|| SharedStagingFormat != Format)
 			{
-				FRHITexture2D* TextureRHI = TextureResource->GetTexture2DRHI();
-				if (TextureRHI != nullptr)
-				{
-					void* NativeTexturePtr = TextureRHI->GetNativeResource();
-					if (NativeTexturePtr != nullptr)
-					{					
-						if (CaptureSource == ESceneCaptureSource::SCS_SceneColorHDR ||
-							CaptureSource == ESceneCaptureSource::SCS_FinalColorLDR)
-						{
-							WriteColorRenderTargetTexture writeRequest;
-							writeRequest.apiColorTexturePtr= NativeTexturePtr;
+				FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("MikanSharedStaging"), Width, Height, Format)
+						.SetFlags(ETextureCreateFlags::ShaderResource
+								  | ETextureCreateFlags::RenderTargetable
+								  | ETextureCreateFlags::Shared);
 
-							MikanAPI->sendRequest(writeRequest);
-						}
-						else if (CaptureSource == ESceneCaptureSource::SCS_SceneDepth)
-						{
-							WriteDepthRenderTargetTexture writeRequest;
-							writeRequest.apiDepthTexturePtr= NativeTexturePtr;
-							writeRequest.zNear= NearClippingPlaneUU;
-							writeRequest.zFar= FarClippingPlaneUU;
-
-							MikanAPI->sendRequest(writeRequest);
-						}
-					}
-				}
+				SharedStagingTexture = RHICmdList.CreateTexture(Desc);
+				SharedStagingWidth = Width;
+				SharedStagingHeight = Height;
+				SharedStagingFormat = Format;
 			}
+
+			FRHITexture* Src = RTResource->GetRenderTargetTexture();
+			FRHITexture* Dst = SharedStagingTexture.GetReference();
+			if (Src == nullptr || Dst == nullptr)
+			{
+				return;
+			}
+
+			RHICmdList.Transition(FRHITransitionInfo(Src, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+
+			RHICmdList.CopyTexture(Src, Dst, FRHICopyTextureInfo());
+
+			// Leave the staging texture in SRVMask so its resource state matches the GENERIC_READ
+			// state Mikan wraps it with - this is what stops 11on12 and Unreal's state tracker from
+			// disagreeing about the resource's state.
+			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+
+			// Block until the GPU has finished the copy so Mikan reads a complete, settled texture.
+			RHICmdList.SubmitCommandsAndFlushGPU();
+		});
+
+	// Wait for the render thread (and the GPU flush above) to complete before reading the staging
+	// texture's native handle back on the game thread.
+	FlushRenderingCommands();
+
+	if (!SharedStagingTexture.IsValid())
+	{
+		return nullptr;
+	}
+
+	return SharedStagingTexture->GetNativeResource();
+}
+
+AMikanClient* UMikanCaptureComponent::GetOwnerMikanClient() const
+{
+	if (auto* OwnerFrameCaptureActor = Cast<AMikanFrameCaptureActor>(GetOwner()))
+	{
+		if (AMikanCameraActor* OwnerCameraActor = OwnerFrameCaptureActor->GetOwnerCameraActor())
+		{
+			return OwnerCameraActor->GetOwnerMikanClient();
 		}
 	}
+
+	return nullptr;
 }
 
 // Mikan UE4 Events
@@ -149,7 +282,39 @@ void UMikanCaptureComponent::HandleMikanRenderableRegistered(UMikanRenderableCom
 {
 	if (Renderable)
 	{
-		ShowOnlyActors.AddUnique(Renderable->GetOwner());
+		AActor* RenderableOwner= Renderable->GetOwner();
+		TArray<UActorComponent*> ColorRenderComponents =
+			RenderableOwner->GetComponentsByTag(UPrimitiveComponent::StaticClass(), MikanRenderColor);
+		TArray<UActorComponent*> DepthRenderComponents =
+			RenderableOwner->GetComponentsByTag(UPrimitiveComponent::StaticClass(), MikanRenderDepth);
+		TArray<UActorComponent*> ShadowRenderComponents =
+			RenderableOwner->GetComponentsByTag(UPrimitiveComponent::StaticClass(), MikanRenderShadow);
+
+		// If the actor opts into the Mikan per-buffer tag system, only the components tagged for
+		// this capture's buffer are shown. Otherwise the whole actor is shown in every capture
+		// (e.g. a virtual character that should appear in color and cast shadows into the shadow pass).
+		const bool bIsShadowKind=
+			CaptureKind == EMikanCaptureKind::Shadow || CaptureKind == EMikanCaptureKind::ShadowReference;
+
+		if (ColorRenderComponents.Num() > 0 || DepthRenderComponents.Num() > 0 || ShadowRenderComponents.Num() > 0)
+		{
+			const TArray<UActorComponent*>& KindComponents=
+				(CaptureKind == EMikanCaptureKind::Depth) 
+				? DepthRenderComponents
+				: (bIsShadowKind ? ShadowRenderComponents : ColorRenderComponents);
+
+			for (UActorComponent* Component : KindComponents)
+			{
+				ShowOnlyComponents.Add(CastChecked<UPrimitiveComponent>(Component));
+			}
+		}
+		// Untagged renderable (e.g. a virtual character). It's a shadow caster, not a catcher, so
+		// it belongs in every pass EXCEPT the reference pass (B), whose whole purpose is to capture
+		// the catcher with no casters present.
+		else if (CaptureKind != EMikanCaptureKind::ShadowReference)
+		{
+			ShowOnlyActors.AddUnique(Renderable->GetOwner());
+		}
 	}
 }
 

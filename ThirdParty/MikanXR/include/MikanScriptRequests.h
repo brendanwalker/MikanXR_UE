@@ -9,21 +9,30 @@
 #include "MikanScriptRequests.rfkh.h"
 #endif
 
-struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanScriptRequest")) SendScriptMessage :
-	public MikanRequest
+// Triggers are project-wide: every script file runs in the project's one Lua
+// state, so a trigger is addressed by name alone
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanScriptRequest")) InvokeScriptTrigger : public MikanRequest
 {
 public:
-	SendScriptMessage()
-	{
-		MIKAN_REQUEST_TYPE_INFO_INIT(SendScriptMessage)
-	}
+	InvokeScriptTrigger(){MIKAN_REQUEST_TYPE_INFO_INIT(InvokeScriptTrigger)}
 
-	FIELD()
-	MikanScriptMessageInfo message;
+	FIELD() Serialization::String trigger_name;
 
-	#ifdef MIKANAPI_REFLECTION_ENABLED
+#ifdef MIKANAPI_REFLECTION_ENABLED
+	InvokeScriptTrigger_GENERATED
+#endif
+};
+
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanScriptRequest")) SendScriptMessage : public MikanRequest
+{
+public:
+	SendScriptMessage(){MIKAN_REQUEST_TYPE_INFO_INIT(SendScriptMessage)}
+
+	FIELD() MikanScriptMessageInfo message;
+
+#ifdef MIKANAPI_REFLECTION_ENABLED
 	SendScriptMessage_GENERATED
-	#endif
+#endif
 };
 
 #ifdef MIKANAPI_REFLECTION_ENABLED

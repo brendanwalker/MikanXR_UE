@@ -19,9 +19,6 @@ public:
 		return FModuleManager::Get().IsModuleLoaded("MikanXR");
 	}
 
-	virtual void ConnectSubsystem(class UMikanWorldSubsystem* Subsystem) = 0;
-	virtual void DisconnectSubsystem(class UMikanWorldSubsystem* Subsystem) = 0;
-	virtual bool GetIsConnected() = 0;
 	virtual class IMikanAPI* GetMikanAPI() = 0;
 	virtual void GetClientInfo(struct MikanClientInfo* OutClientInfo) = 0;
 };

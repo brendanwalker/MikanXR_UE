@@ -8,25 +8,23 @@
 
 namespace Serialization
 {
-	template<typename t_object_type>
-	bool deserializeFromJsonString(const std::string& jsonString, t_object_type& instance)
-	{
-		return deserializeFromJsonString(jsonString, &instance, t_object_type::staticGetArchetype());
-	}
+SERIALIZATION_API bool deserializeFromJsonString(const std::string& jsonString, void* instance,
+												 rfk::Struct const& structType, std::string& outErrorMsg);
 
-	SERIALIZATION_API bool deserializeFromJsonString(
-		const std::string& jsonString, 
-		void* instance, 
-		rfk::Struct const& structType);
+SERIALIZATION_API bool deserializeFromJson(const nlohmann::json& jsonObject, void* instance,
+										   rfk::Struct const& structType, std::string& outErrorMsg);
 
-	template<typename t_object_type>
-	bool deserializeFromJson(const nlohmann::json& jsonObject, t_object_type& instance)
-	{
-		return deserializeFromJson(jsonObject, &instance, t_object_type::staticGetArchetype());
-	}
+#ifdef SERIALIZATION_REFLECTION_ENABLED
+template <typename t_object_type>
+bool deserializeFromJsonString(const std::string& jsonString, t_object_type& instance, std::string& outErrorMsg)
+{
+	return deserializeFromJsonString(jsonString, &instance, t_object_type::staticGetArchetype(), outErrorMsg);
+}
 
-	SERIALIZATION_API bool deserializeFromJson(
-		const nlohmann::json& jsonObject, 
-		void* instance, 
-		rfk::Struct const& structType);
-};
+template <typename t_object_type>
+bool deserializeFromJson(const nlohmann::json& jsonObject, t_object_type& instance, std::string& outErrorMsg)
+{
+	return deserializeFromJson(jsonObject, &instance, t_object_type::staticGetArchetype(), outErrorMsg);
+}
+#endif // SERIALIZATION_REFLECTION_ENABLED
+}; // namespace Serialization

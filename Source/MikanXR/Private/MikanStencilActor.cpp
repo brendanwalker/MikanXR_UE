@@ -1,46 +1,37 @@
 #include "MikanStencilActor.h"
-#include "MikanCamera.h"
-#include "Engine/Engine.h"
-#include "MikanScene.h"
-#include "MikanStencilComponent.h"
-#include "Components/TextRenderComponent.h"
-
-AMikanStencilActor::AMikanStencilActor(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
+#include "MikanStencilTypes.h"
+#
+// -- UMikanStencilData -----
+void UMikanStencilData::Initialize(const Serialization::PolymorphicObjectPtr& InValuesObject)
 {
-	PrimaryActorTick.bCanEverTick = true;
+	UMikanTransformData::Initialize(InValuesObject);
 
-	StencilComponent = CreateDefaultSubobject<UMikanStencilComponent>(TEXT("StencilRoot"));
-	RootComponent = StencilComponent;
-
-	LabelComponent = CreateDefaultSubobject<UTextRenderComponent>(TEXT("Label"));
-	LabelComponent->SetupAttachment(RootComponent);
+	const auto* StencilValues = InValuesObject.getTypedPointer<MikanStencilComponentValues>();
+	bIsDisabled = StencilValues->is_disabled;
+	CullMode = static_cast<int32>(StencilValues->cull_mode);
 }
 
-AMikanScene* AMikanStencilActor::GetParentScene() const
+bool UMikanStencilData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
 {
-	USceneComponent* AttachParentComponent = RootComponent->GetAttachParent();
-
-	if (AttachParentComponent != nullptr)
+	if (FieldName == "is_disabled")
 	{
-		return Cast<AMikanScene>(AttachParentComponent->GetOwner());
+		bIsDisabled = FieldValue.getBoolValue();
+		return true;
 	}
-
-	return nullptr;
+	else if (FieldName == "cull_mode")
+	{
+		CullMode = FieldValue.getIntValue();
+		return true;
+	}
+	else
+	{
+		return UMikanTransformData::ApplyMikanValue(FieldName, FieldValue);
+	}
 }
 
-int32 AMikanStencilActor::GetStencilId() const
+void UMikanStencilData::Describe(TArray<FString>& OutLines) const
 {
-	return StencilComponent->StencilId;
-}
-
-void AMikanStencilActor::ApplyStencilName(const FString& InAnchorName)
-{
-	StencilComponent->ApplyStencilName(InAnchorName);
-	UpdateLabelText();
-}
-
-void AMikanStencilActor::UpdateLabelText()
-{
-	LabelComponent->SetText(FText::FromString(StencilComponent->StencilName));
+	UMikanTransformData::Describe(OutLines);
+	Mikan::AppendDescribeLine(OutLines, TEXT("is_disabled"), bIsDisabled);
+	Mikan::AppendDescribeLine(OutLines, TEXT("cull_mode"), CullMode);
 }

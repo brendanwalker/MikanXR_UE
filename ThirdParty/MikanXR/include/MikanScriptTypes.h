@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MikanAPIExport.h"
+#include "MikanComponentTypes.h"
 #include "SerializationProperty.h"
 #include "SerializableString.h"
 
@@ -9,14 +10,27 @@
 #endif
 
 // Script Event Types
-struct STRUCT(Serialization::CodeGenModule("MikanScriptTypes")) MikanScriptMessageInfo 
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanScriptTypes")) MikanScriptMessageInfo
 {
-	FIELD()
-	Serialization::String content;
+	FIELD() Serialization::String content;
 
-	#ifdef MIKANAPI_REFLECTION_ENABLED
+#ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanScriptMessageInfo_GENERATED
-	#endif
+#endif
+};
+
+// Structures
+struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanScriptTypes")) MikanScriptComponentValues
+	: public MikanComponentValues
+{
+	static const char* k_componentClassName;
+	static const char* k_ownerSystemName;
+
+	FIELD() Serialization::String script_path;
+
+#ifdef MIKANAPI_REFLECTION_ENABLED
+	MikanScriptComponentValues_GENERATED
+#endif
 };
 
 #ifdef MIKANAPI_REFLECTION_ENABLED

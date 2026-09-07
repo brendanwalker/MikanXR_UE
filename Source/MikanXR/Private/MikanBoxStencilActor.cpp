@@ -1,11 +1,58 @@
 #include "MikanBoxStencilActor.h"
-#include "MikanCamera.h"
+#include "MikanCameraActor.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/WorldSettings.h"
 #include "MikanMath.h"
-#include "MikanScene.h"
+#include "MikanSceneActor.h"
 #include "MikanStencilTypes.h"
-#include "MikanStencilComponent.h"
 
+// -- UMikanBoxStencilData -----
+void UMikanBoxStencilData::Initialize(const Serialization::PolymorphicObjectPtr& InValuesObject)
+{
+	UMikanStencilData::Initialize(InValuesObject);
+
+	// Swap Z and Y axes between Mikan and Unreal
+	const auto* BoxStencilValues = InValuesObject.getTypedPointer<MikanBoxStencilComponentValues>();
+	BoxXSize = BoxStencilValues->box_x_size;
+	BoxYSize = BoxStencilValues->box_z_size;
+	BoxZSize = BoxStencilValues->box_y_size;
+}
+
+bool UMikanBoxStencilData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
+{
+	// Swap Z and Y axes between Mikan and Unreal
+	if (FieldName == "box_x_size")
+	{
+		BoxXSize = FieldValue.getFloatValue();
+		return true;
+	}
+	else if (FieldName == "box_z_size")
+	{
+		BoxYSize = FieldValue.getFloatValue();
+		return true;
+	}
+	else if (FieldName == "box_y_size")
+	{
+		BoxZSize = FieldValue.getFloatValue();
+		return true;
+	}
+	else
+	{
+		return UMikanStencilData::ApplyMikanValue(FieldName, FieldValue);
+	}
+}
+
+void UMikanBoxStencilData::Describe(TArray<FString>& OutLines) const
+{
+	UMikanStencilData::Describe(OutLines);
+	Mikan::AppendDescribeLine(OutLines, TEXT("box_x_size"), BoxXSize);
+	Mikan::AppendDescribeLine(OutLines, TEXT("box_y_size"), BoxYSize);
+	Mikan::AppendDescribeLine(OutLines, TEXT("box_z_size"), BoxZSize);
+}
+
+// -- AMikanBoxStencilActor -----
 AMikanBoxStencilActor::AMikanBoxStencilActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -21,39 +68,17 @@ void AMikanBoxStencilActor::Tick(float DeltaSeconds)
 	DrawDebugBox(GetWorld(), Center, Extents, Rot.Quaternion(), FColor::Yellow);
 }
 
-AMikanBoxStencilActor* AMikanBoxStencilActor::SpawnStencil(
-	AMikanScene* OwnerScene,
-	const MikanStencilBoxInfo& BoxStencilInfo)
+void AMikanBoxStencilActor::BindMikanComponentData(UMikanComponentData* Data)
 {
-	// Spawn a new stencil
-	FActorSpawnParameters SpawnParameters;
-	SpawnParameters.Name = *FString::Printf(TEXT("BoxStencil_%d"), BoxStencilInfo.stencil_id);
-	SpawnParameters.Owner = OwnerScene;
+	Super::BindMikanComponentData(Data);
 
-	// Spawn the stencil actor
-	UWorld* World = OwnerScene->GetWorld();
-	AMikanBoxStencilActor* NewStencil = 
-		World->SpawnActor<AMikanBoxStencilActor>(
-			AMikanBoxStencilActor::StaticClass(), 
-			FTransform::Identity, 
-			SpawnParameters);
+	if (auto* BoxShapeData = Cast<UMikanBoxStencilData>(Data))
+	{
+		const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
 
-	NewStencil->AttachToActor(OwnerScene, FAttachmentTransformRules::SnapToTargetIncludingScale);
-	NewStencil->ApplyBoxStencilInfo(BoxStencilInfo);
-
-	return NewStencil;
-}
-
-void AMikanBoxStencilActor::ApplyBoxStencilInfo(const MikanStencilBoxInfo& InStencilInfo)
-{
-	StencilComponent->ApplyStencilInfo(
-		InStencilInfo.stencil_id,
-		InStencilInfo.stencil_name.getValue(),
-		InStencilInfo.relative_transform);
-
-	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
-	Extents= FVector(
-		InStencilInfo.box_x_size * 0.5f * MetersToUU,
-		InStencilInfo.box_y_size * 0.5f * MetersToUU,
-		InStencilInfo.box_z_size * 0.5f * MetersToUU);
+		Extents = FVector(
+			BoxShapeData->GetBoxXSize() * 0.5f * MetersToUU,
+			BoxShapeData->GetBoxYSize() * 0.5f * MetersToUU,
+			BoxShapeData->GetBoxZSize() * 0.5f * MetersToUU);
+	}
 }

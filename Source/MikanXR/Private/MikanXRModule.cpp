@@ -14,7 +14,6 @@
 #include "MikanAPI.h"
 #include "MikanClientEvents.h"
 #include "MikanClientRequests.h"
-#include "MikanWorldSubsystem.h"
 
 DEFINE_LOG_CATEGORY(MikanXRLog);
 
@@ -27,16 +26,7 @@ class FMikanXRModule : public IMikanXRModule
 
 	static void MIKAN_CALLBACK MikanLogCallback(int log_level, const char* log_message);
 
-	FTickerDelegate TickDelegate;
-	FTSTicker::FDelegateHandle TickDelegateHandle;
-	float MikanReconnectTimeout= 0.f;
-	bool bAutoReconnectEnabled= true;
-	bool bIsConnected= false;
-
 	// IMikanXRModule
-	virtual void ConnectSubsystem(UMikanWorldSubsystem* World) override;
-	virtual void DisconnectSubsystem(UMikanWorldSubsystem* World) override;
-	virtual bool GetIsConnected() override;
 	virtual IMikanAPI* GetMikanAPI() override
 	{
 		// Expose the raw C++ pointer to other unreal systems, rather than the smart pointer.
@@ -51,7 +41,6 @@ class FMikanXRModule : public IMikanXRModule
 
 	IMikanAPIPtr MikanAPI= nullptr;
 	MikanClientInfo ClientInfo;
-	TArray<UMikanWorldSubsystem*> ConnectedSubsystems;
 };
 
 IMPLEMENT_MODULE(FMikanXRModule, MikanXR)
@@ -65,7 +54,7 @@ void FMikanXRModule::StartupModule()
 		return;
 	}
 
-	MikanAPIResult Result= MikanAPI->init(MikanLogLevel_Info, &FMikanXRModule::MikanLogCallback);
+	MikanAPIResult Result= MikanAPI->init("MikanXR_UEClient", MikanLogLevel_Info, &FMikanXRModule::MikanLogCallback);
 	if (Result == MikanAPIResult::Success)
 	{
 		UE_LOG(MikanXRLog, Log, TEXT("Initialized MikanXR API"));
@@ -115,8 +104,21 @@ void FMikanXRModule::StartupModule()
 			if (graphicsDeviceInterface != nullptr)
 			{
 				MikanAPI->setGraphicsDeviceInterface(
-					ClientInfo.graphicsAPI, 
+					ClientInfo.graphicsAPI,
 					graphicsDeviceInterface);
+			}
+
+			// Also register the native graphics command queue. On D3D12 Mikan creates its
+			// D3D11On12 device against this queue so the shared-texture copy is serialized on
+			// the GPU after our scene capture, instead of racing it on a separate queue (which
+			// produced flickering in the Spout output).
+			void* graphicsCommandQueueInterface= GDynamicRHI->RHIGetNativeGraphicsQueue();
+
+			if (graphicsCommandQueueInterface != nullptr)
+			{
+				MikanAPI->setGraphicsCommandQueueInterface(
+					ClientInfo.graphicsAPI,
+					graphicsCommandQueueInterface);
 			}
 		}
 	}
@@ -133,116 +135,6 @@ void FMikanXRModule::ShutdownModule()
 		MikanAPI->shutdown();
 		MikanAPI= nullptr;
 	}
-}
-
-void FMikanXRModule::ConnectSubsystem(UMikanWorldSubsystem* Subsystem)
-{
-	if (MikanAPI)
-	{
-		void* graphicsDeviceInterface = nullptr;
-		MikanAPI->getGraphicsDeviceInterface(
-			ClientInfo.graphicsAPI,
-			&graphicsDeviceInterface);
-
-		check(graphicsDeviceInterface == GDynamicRHI->RHIGetNativeDevice());
-
-		if (ConnectedSubsystems.Num() == 0)
-		{
-			TickDelegate = FTickerDelegate::CreateRaw(this, &FMikanXRModule::Tick);
-			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate);
-		}
-
-		ConnectedSubsystems.AddUnique(Subsystem);
-	}
-}
-
-void FMikanXRModule::DisconnectSubsystem(UMikanWorldSubsystem* Subsystem)
-{
-	ConnectedSubsystems.Remove(Subsystem);
-
-	if (ConnectedSubsystems.Num() == 0)
-	{
-		FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
-
-		if (MikanAPI->getIsConnected())
-		{
-			DisposeClientRequest disposeRequest = {};
-			MikanAPI->sendRequest(disposeRequest).awaitResponse();
-
-			MikanAPI->disconnect();
-		}
-	}
-}
-
-bool FMikanXRModule::GetIsConnected()
-{
-	return MikanAPI && MikanAPI->getIsConnected();
-}
-
-bool FMikanXRModule::Tick(float DeltaTime)
-{
-	if (MikanAPI)
-	{
-		if (MikanAPI->getIsConnected())
-		{
-			MikanEventPtr mikanEvent;
-			while (MikanAPI->fetchNextEvent(mikanEvent) == MikanAPIResult::Success)
-			{
-				// Handle connection related events
-				if (typeid(*mikanEvent) == typeid(MikanConnectedEvent))
-				{
-					// Send client info back to the server on connection
-					InitClientRequest initClientRequest = {};
-					initClientRequest.clientInfo = ClientInfo;
-
-					MikanAPI->sendRequest(initClientRequest).awaitResponse();
-				}
-				else if (typeid(*mikanEvent) == typeid(MikanDisconnectedEvent))
-				{
-					auto disconnectEvent = std::static_pointer_cast<MikanDisconnectedEvent>(mikanEvent);
-					const std::string reason = disconnectEvent->reason.getValue();
-
-					if (disconnectEvent->code == MikanDisconnectCode_IncompatibleVersion)
-					{
-						// The server has disconnected us because we are using an incompatible version
-						// Disable reconnection, since it is never going to work
-						bAutoReconnectEnabled = true;
-						UE_LOG(MikanXRLog, Error, TEXT("MikanDisconnectedEvent: Disable reconnect due to incompatible client"));
-					}
-					else
-					{
-						UE_LOG(MikanXRLog, Log, TEXT("MikanDisconnectedEvent: %s"), ANSI_TO_TCHAR(reason.c_str()));
-					}
-				}
-
-				// Forward the event to all connected subsystems
-				for (UMikanWorldSubsystem* Subsystem : ConnectedSubsystems)
-				{
-					Subsystem->HandleMikanEvent(mikanEvent);
-				}
-			}
-		}
-		else
-		{
-			if (ConnectedSubsystems.Num() > 0)
-			{
-				if (MikanReconnectTimeout <= 0.f)
-				{
-					if (MikanAPI->connect() != MikanAPIResult::Success)
-					{
-						// timeout between reconnect attempts
-						MikanReconnectTimeout = 1.0f;
-					}
-				}
-				else
-				{
-					MikanReconnectTimeout -= DeltaTime;
-				}
-			}
-		}
-	}
-
-	return true;
 }
 
 void FMikanXRModule::MikanLogCallback(int log_level, const char* log_message)
