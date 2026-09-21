@@ -33,11 +33,13 @@ class AMikanRGBSpotLightActor : public AMikanDMXFixtureActor
 public:
 	AMikanRGBSpotLightActor(const FObjectInitializer& ObjectInitializer);
 
+	// The emitter spec Mikan sends for this fixture wins once its component data binds.
+	// These are what the actor uses before that, and if it is placed without a Mikan fixture.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
-	float MaxWattage = 9.f;
+	float MaxWattage = 0.3f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
-	float LumensPerWatt= 75.f;
+	float LumensPerWatt= 83.f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	class USceneComponent* LightForward;

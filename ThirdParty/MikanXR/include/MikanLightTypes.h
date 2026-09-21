@@ -107,6 +107,13 @@ struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanLightTypes")) MikanDM
 
 	FIELD() bool is_disabled= false;
 
+	/// Electrical power the fixture draws at full channel value, in watts. With
+	/// lumens_per_watt this is what turns a channel byte into a light a client can render.
+	FIELD() float max_wattage= 0.3f;
+
+	/// Luminous efficacy of the fixture's emitter, in lumens per watt.
+	FIELD() float lumens_per_watt= 83.f;
+
 #ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanDMXFixtureComponentValues_GENERATED
 #endif

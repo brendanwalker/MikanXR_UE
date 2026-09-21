@@ -15,6 +15,8 @@ void UMikanDMXFixtureData::Initialize(const Serialization::PolymorphicObjectPtr&
 	DmxStartChannel = static_cast<int32>(FixtureValues->dmx_start_channel);
 	DmxChannelCount = static_cast<int32>(FixtureValues->dmx_channel_count);
 	bIsDisabled = FixtureValues->is_disabled;
+	MaxWattage = FixtureValues->max_wattage;
+	LumensPerWatt = FixtureValues->lumens_per_watt;
 }
 
 bool UMikanDMXFixtureData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
@@ -44,6 +46,16 @@ bool UMikanDMXFixtureData::ApplyMikanValue(const FString& FieldName, const Mikan
 		bIsDisabled = FieldValue.getBoolValue();
 		return true;
 	}
+	else if (FieldName == "max_wattage")
+	{
+		MaxWattage = FieldValue.getFloatValue();
+		return true;
+	}
+	else if (FieldName == "lumens_per_watt")
+	{
+		LumensPerWatt = FieldValue.getFloatValue();
+		return true;
+	}
 	else
 	{
 		return UMikanTransformData::ApplyMikanValue(FieldName, FieldValue);
@@ -58,6 +70,8 @@ void UMikanDMXFixtureData::Describe(TArray<FString>& OutLines) const
 	Mikan::AppendDescribeLine(OutLines, TEXT("dmx_start_channel"), DmxStartChannel);
 	Mikan::AppendDescribeLine(OutLines, TEXT("dmx_channel_count"), DmxChannelCount);
 	Mikan::AppendDescribeLine(OutLines, TEXT("is_disabled"), bIsDisabled);
+	Mikan::AppendDescribeLine(OutLines, TEXT("max_wattage"), MaxWattage);
+	Mikan::AppendDescribeLine(OutLines, TEXT("lumens_per_watt"), LumensPerWatt);
 }
 
 // -- AMikanDMXFixtureActor -----
@@ -78,6 +92,12 @@ void AMikanDMXFixtureActor::BindMikanComponentData(UMikanComponentData* Data)
 	{
 		OwnerMikanClient->OnDMXDataChanged.AddUniqueDynamic(this, &AMikanDMXFixtureActor::OnDMXDataChanged);
 	}
+
+	// Seed from whatever the DMX store already holds. Subscribing only catches the next change,
+	// and the store is usually filled before this actor exists: Mikan answers the subscription
+	// with a snapshot while the component fetch is still spawning actors. Without this a fixture
+	// stays dark until something happens to move its channels.
+	OnDMXDataChanged();
 }
 
 void AMikanDMXFixtureActor::Destroyed()

@@ -22,6 +22,8 @@ public:
 	inline int32 GetDmxStartChannel() const { return DmxStartChannel; }
 	inline int32 GetDmxChannelCount() const { return DmxChannelCount; }
 	inline bool IsDisabled() const { return bIsDisabled; }
+	inline float GetMaxWattage() const { return MaxWattage; }
+	inline float GetLumensPerWatt() const { return LumensPerWatt; }
 
 private:
 	int32 StageId = -1;
@@ -29,6 +31,8 @@ private:
 	int32 DmxStartChannel = 1;
 	int32 DmxChannelCount = 3;
 	bool bIsDisabled = false;
+	float MaxWattage = 0.3f;
+	float LumensPerWatt = 83.f;
 };
 
 UCLASS(BlueprintType)

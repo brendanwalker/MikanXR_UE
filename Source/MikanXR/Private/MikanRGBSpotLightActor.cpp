@@ -175,9 +175,19 @@ float AMikanRGBSpotLightActor::GetBrightness() const
 	// Calculate the power draw fraction based on the DMX [0,1] parameters
 	const float MaxWattFraction = (DMXRedFraction + DMXGreenFraction + DMXBlueFraction) / 3.f;
 
+	// The fixture's emitter spec comes from Mikan, where the project author records what the
+	// hardware actually is. The properties on this actor are only the pre-connection fallback.
+	float FixtureWattage = MaxWattage;
+	float FixtureLumensPerWatt = LumensPerWatt;
+	if (const auto* FixtureData = Cast<UMikanDMXFixtureData>(GetTransformData()))
+	{
+		FixtureWattage = FixtureData->GetMaxWattage();
+		FixtureLumensPerWatt = FixtureData->GetLumensPerWatt();
+	}
+
 	// Compute the light output in lumens based on the wattage
-	const float Watts = MaxWattage * MaxWattFraction;
-	const float LumensOutput = Watts * LumensPerWatt;
+	const float Watts = FixtureWattage * MaxWattFraction;
+	const float LumensOutput = Watts * FixtureLumensPerWatt;
 
 	return LumensOutput;
 }
