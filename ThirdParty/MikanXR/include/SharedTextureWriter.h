@@ -70,6 +70,29 @@ struct SharedTextureDescriptor
 	SharedClientGraphicsApi graphicsAPI= SharedClientGraphicsApi::UNKNOWN;
 };
 
+// The Vulkan client's device, mirroring MikanVulkanDeviceInterface without the Vulkan headers:
+// every Vulkan handle is a pointer on the x64 builds this library ships. Passed as the
+// apiDeviceInterface of a Vulkan accessor.
+struct SharedVulkanDeviceInterface
+{
+	void* instance= nullptr;       // VkInstance
+	void* physicalDevice= nullptr; // VkPhysicalDevice
+	void* device= nullptr;         // VkDevice
+	void* queue= nullptr;          // VkQueue, graphics-capable
+	uint32_t queueFamilyIndex= 0;
+};
+
+// One frame's image from a Vulkan client, mirroring MikanVulkanTexture. Passed as the
+// ApiTexturePtr of a Vulkan accessor's write calls.
+struct SharedVulkanTexture
+{
+	void* image= nullptr; // VkImage
+	int32_t layout= 0;    // VkImageLayout the image is in on entry and is returned to
+	int32_t format= 0;    // VkFormat
+	uint32_t width= 0;
+	uint32_t height= 0;
+};
+
 class ISharedTextureWriteAccessor
 {
 public:

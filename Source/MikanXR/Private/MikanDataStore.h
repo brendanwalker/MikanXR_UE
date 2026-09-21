@@ -16,6 +16,11 @@ DECLARE_MULTICAST_DELEGATE_OneParam(
 	FOnMikanComponentListChanged,
 	const UMikanComponentSystem* /*System*/)
 
+DECLARE_MULTICAST_DELEGATE_TwoParams(
+	FOnMikanSystemDataChanged,
+	const UMikanComponentSystem* /*System*/,
+	const FString& /*FieldName*/)
+
 DECLARE_MULTICAST_DELEGATE(FOnMikanComponentsBatchRefreshed)
 
 namespace Mikan
@@ -60,6 +65,21 @@ private:
 	FString ComponentName;
 };
 
+// Values that belong to an object system rather than to any one component. Mikan sends these
+// with a component id of -1, so they have no entry in the component table to land in.
+UCLASS()
+class UMikanSystemData : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UMikanSystemData()= default;
+
+	virtual void Initialize(const Serialization::PolymorphicObjectPtr& InValuesObject) {}
+	virtual bool ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue) { return false; }
+	virtual void Describe(TArray<FString>& OutLines) const {}
+};
+
 UCLASS()
 class UMikanComponentSystem : public UObject
 {
@@ -67,6 +87,7 @@ class UMikanComponentSystem : public UObject
 
 public:
 	using ComponentDataFactory=	TFunction<UMikanComponentData* (UMikanComponentSystem*)>;
+	using SystemDataFactory= TFunction<UMikanSystemData* (UMikanComponentSystem*)>;
 
 	UMikanComponentSystem()= default;
 
@@ -74,6 +95,20 @@ public:
 		const char* InSystemName,
 		const char* InComponentClassName,
 		ComponentDataFactory Factory);
+
+	// Opts this system into system-level values. Without a factory the system ignores them,
+	// which is what every system but the scene system does today.
+	void SetSystemDataFactory(SystemDataFactory Factory);
+	inline UMikanSystemData* GetSystemData() const { return SystemData; }
+
+	template<typename T>
+	T* GetTypedSystemData() const { return Cast<T>(SystemData); }
+
+	// Asynchronously fetch this system's own values. No-op without a system data factory.
+	// Runs beside FetchAllComponents rather than inside its completion count, so subscribers
+	// treat the system values and the component tables as two independent arrivals.
+	void FetchSystemValues();
+
 	// Asynchronously rebuild this system's component table. OnComplete runs on the game thread once
 	// the list + every component's values have been fetched (or immediately if there's no API), and
 	// reports whether every request was answered. A false result means the table is incomplete.
@@ -102,9 +137,13 @@ protected:
 	FString SystemName;
 	FString ComponentClassName;
 	ComponentDataFactory DataObjectFactory;
+	SystemDataFactory SystemDataObjectFactory;
 
 	UPROPERTY(Transient)
 	TMap<int32, UMikanComponentData*> ComponentDataTable;
+
+	UPROPERTY(Transient)
+	UMikanSystemData* SystemData= nullptr;
 };
 
 UCLASS()
@@ -114,6 +153,7 @@ class UMikanDataStore : public UObject
 
 public:
 	using ComponentDataFactory = UMikanComponentSystem::ComponentDataFactory;
+	using SystemDataFactory = UMikanComponentSystem::SystemDataFactory;
 
 	UMikanDataStore()= default;
 
@@ -132,6 +172,16 @@ public:
 		const char* OwnerSystemName,
 		const char* ComponentClassName,
 		ComponentDataFactory Factory);
+
+	// Gives an already-registered system a place to keep its system-level values.
+	template<typename MikanSystemValuesType, typename UnrealSystemDataType>
+	void AddTypedSystemData()
+	{
+		AddSystemData(
+			MikanSystemValuesType::k_systemName,
+			[](UMikanComponentSystem* OwnerSystem) { return NewObject<UnrealSystemDataType>(OwnerSystem); });
+	}
+	void AddSystemData(const char* OwnerSystemName, SystemDataFactory Factory);
 
 	inline const TMap<FString, UMikanComponentSystem*>& GetSystemsTable() const { return SystemsTable; }
 
@@ -158,6 +208,10 @@ public:
 
 	// Fires after the component list for a system is rebuilt in the DataStore.
 	FOnMikanComponentListChanged OnComponentListChanged;
+
+	// Fires when a system's own values arrive or change. The field name is empty for the
+	// initial fetch, which delivers every field at once.
+	FOnMikanSystemDataChanged OnSystemDataChanged;
 
 	// Fires once after FetchAllComponents has rebuilt every system, so subscribers can
 	// refresh cross-system state (e.g. actor attachments) against a fully consistent store.

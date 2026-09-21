@@ -56,6 +56,14 @@ public:
 	UFUNCTION(BlueprintPure)
 	inline class AMikanSceneActor* GetActiveMikanScene() const { return ActiveMikanScene; }
 
+	// Points the active scene at whichever scene the Mikan editor has current. Blueprints can
+	// still override the choice afterwards through SetActiveMikanScene.
+	void RefreshActiveSceneFromEditor();
+
+	// Hides every scene subtree but the active one, minus any scene with Force Render set. The
+	// editor's project viewport applies the same rule, so both sides show the same geometry.
+	void RefreshSceneVisibility();
+
 	IMikanAPI* GetMikanAPI() const;
 	const MikanClientInfo* GetClientInfo() const;
 
@@ -199,6 +207,7 @@ protected:
 
 	void SyncAllSpawnedActors();
 	void HandleComponentListChanged(const UMikanComponentSystem* System);
+	void HandleSystemDataChanged(const UMikanComponentSystem* System, const FString& FieldName);
 	void SyncSystemSpawnedActors(const UMikanComponentSystem* System, bool bRefreshAttachments);
 	void DespawnAllSpawnedActors();
 	void RefreshAllSpawnedActorAttachments();

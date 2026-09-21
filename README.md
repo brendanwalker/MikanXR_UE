@@ -2,6 +2,14 @@
 
 Unreal Engine plugin for MikanXR. It connects the engine to a running Mikan editor over the MikanXR client API, mirrors the Mikan scene (anchors, stencils, shapes, cameras, lights, stages, scenes) as actors under an `AMikanClient`, publishes render targets back to the compositor, and relays DMX light data.
 
+## Scenes
+
+A Mikan project can hold several scenes, including more than one on the same stage, and only one of them is current at a time. The plugin spawns actors for all of them and follows the editor's choice: the scene system's `current_scene_id` sets `AMikanClient`'s active scene, and every other scene's actor subtree is hidden. A hidden actor casts no shadow, which is the point, since an inactive scene's depth proxy mesh would otherwise shadow the live shot.
+
+A scene with the editor's Force Render flag set stays visible while another scene is active. That is how two stages get aligned against each other with both scenes on screen.
+
+`AMikanClient::SetActiveMikanScene` is still Blueprint callable and still fires the `OnSceneActivated` / `OnSceneDeactivated` events, so a Blueprint can override the choice. The next `current_scene_id` change from the editor takes it back.
+
 ## Automation
 
 The plugin can be driven and inspected from outside the process through Unreal's Remote Control HTTP API, which the editor starts on `http://127.0.0.1:30010` when the Remote Control plugin is enabled. `Tools/ue_automate.py` is the checked-in client. It mirrors the shape of the MikanXR editor's `tools/automate.py`: each argument is one command, each reply is echoed after a `> command` line, and a failure exits nonzero.
@@ -28,7 +36,7 @@ The `mikan` commands call `UMikanDebugLibrary`, a static function library in the
 - `mikan rc <commandType> [args...]` sends a Mikan remote control command and replies its result lines
 - `mikan systems` lists the cached component systems as `<system> <componentClass> <count>`
 - `mikan components <system>` lists `<id> <name>` per cached component
-- `mikan component <system> <id>` dumps every cached field of one component, keyed by the Mikan property name
+- `mikan component <system> <id>` dumps every cached field of one component, keyed by the Mikan property name. An id of `-1` names the system itself and dumps its system-level values, the same convention the Mikan editor's automation channel uses
 - `mikan dmx [universe]` lists the cached DMX universes with their non-zero channel counts, or one universe's non-zero channels as `<channel> <value>`
 - `mikan client` replies the object path of the `AMikanClient` actor
 - `mikan actors` lists spawned actors as `<system> <transformId> <parentTransformId> <actorPath>`

@@ -132,9 +132,60 @@ void UMikanComponentSystem::Initialize(
 	DataObjectFactory = Factory;
 }
 
-UMikanDataStore* UMikanComponentSystem::GetOwnerDataStore() const 
-{ 
-	return CastChecked<UMikanDataStore>(GetOuter()); 
+void UMikanComponentSystem::SetSystemDataFactory(SystemDataFactory Factory)
+{
+	SystemDataObjectFactory = Factory;
+}
+
+UMikanDataStore* UMikanComponentSystem::GetOwnerDataStore() const
+{
+	return CastChecked<UMikanDataStore>(GetOuter());
+}
+
+void UMikanComponentSystem::FetchSystemValues()
+{
+	if (!SystemDataObjectFactory)
+	{
+		return;
+	}
+
+	UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get();
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	SystemGetValuesRequest ValuesRequest;
+	ValuesRequest.ownerSystem.setUtf8Value(szSystemName);
+
+	TWeakObjectPtr<UMikanComponentSystem> WeakThis(this);
+	Subsystem->SendRequestAsync(
+		ValuesRequest,
+		[WeakThis](const MikanResponsePtr& ValuesResponse)
+		{
+			UMikanComponentSystem* Self = WeakThis.Get();
+			if (!Self)
+			{
+				return;
+			}
+
+			if (ValuesResponse->resultCode != MikanAPIResult::Success)
+			{
+				UE_LOG(MikanXRLog, Error,
+					TEXT("Failed to fetch System values for System %s (Error Code: %d)"),
+					*Self->SystemName, ValuesResponse->resultCode);
+				return;
+			}
+
+			auto SystemValuesResponse = std::static_pointer_cast<SystemGetValuesResponse>(ValuesResponse);
+
+			Self->SystemData = Self->SystemDataObjectFactory(Self);
+			check(Self->SystemData);
+			Self->SystemData->Initialize(SystemValuesResponse->valuesObject);
+
+			// An empty field name means every field arrived at once
+			Self->GetOwnerDataStore()->OnSystemDataChanged.Broadcast(Self, FString());
+		});
 }
 
 void UMikanComponentSystem::FetchAllComponents(TFunction<void(bool bSuccess)> OnComplete)
@@ -145,6 +196,9 @@ void UMikanComponentSystem::FetchAllComponents(TFunction<void(bool bSuccess)> On
 		if (OnComplete) { OnComplete(false); }
 		return;
 	}
+
+	// The system's own values arrive on their own schedule; nothing below waits on them
+	FetchSystemValues();
 
 	GetComponentListRequest ListRequest;
 	ListRequest.ownerSystem.setUtf8Value(szSystemName);
@@ -272,6 +326,7 @@ void UMikanComponentSystem::FetchAllComponents(TFunction<void(bool bSuccess)> On
 void UMikanComponentSystem::FlushAllComponents()
 {
 	ComponentDataTable.Reset();
+	SystemData = nullptr;
 }
 
 void UMikanComponentSystem::HandleMikanConnected()
@@ -318,6 +373,16 @@ void UMikanComponentSystem::ApplyMikanValue(
 	const FString& FieldName,
 	const MikanVariant& FieldValue)
 {
+	// Mikan addresses a system's own properties with a component id of -1
+	if (ComponentId == INVALID_MIKAN_ID)
+	{
+		if (SystemData && SystemData->ApplyMikanValue(FieldName, FieldValue))
+		{
+			GetOwnerDataStore()->OnSystemDataChanged.Broadcast(this, FieldName);
+		}
+		return;
+	}
+
 	if (UMikanComponentData** ComponentDataPtr = ComponentDataTable.Find(ComponentId))
 	{
 		UMikanComponentData* ComponentData = *ComponentDataPtr;
@@ -359,6 +424,10 @@ void UMikanDataStore::Initialize(IMikanAPI* InMikanAPI)
 	// Stage & Scene
 	AddTypedComponentSystem<MikanStageComponentValues, UMikanStageData>();
 	AddTypedComponentSystem<MikanSceneComponentValues, UMikanSceneData>();
+
+	// The scene system carries which scene the editor has active, which drives
+	// what this client draws (see AMikanClient::RefreshSceneVisibility)
+	AddTypedSystemData<MikanSceneSystemValues, UMikanSceneSystemData>();
 }
 
 void UMikanDataStore::AddComponentSystem(
@@ -370,6 +439,20 @@ void UMikanDataStore::AddComponentSystem(
 	ComponentSystem->Initialize(OwnerSystemName, ComponentClassName, Factory);
 
 	SystemsTable.Emplace(OwnerSystemName, ComponentSystem);
+}
+
+void UMikanDataStore::AddSystemData(const char* OwnerSystemName, SystemDataFactory Factory)
+{
+	if (UMikanComponentSystem* ComponentSystem = GetComponentSystem(OwnerSystemName))
+	{
+		ComponentSystem->SetSystemDataFactory(Factory);
+	}
+	else
+	{
+		UE_LOG(MikanXRLog, Error,
+			TEXT("Cannot add system data to unregistered System %s"),
+			ANSI_TO_TCHAR(OwnerSystemName));
+	}
 }
 
 UMikanComponentSystem* UMikanDataStore::GetComponentSystem(const char* SystemName)

@@ -186,6 +186,7 @@ void AMikanClient::BindToEngineSubsystem()
 	DataStore = EngineSubsystem->GetDataStore();
 	DataStore->OnComponentListChanged.AddUObject(this, &AMikanClient::HandleComponentListChanged);
 	DataStore->OnComponentsBatchRefreshed.AddUObject(this, &AMikanClient::RefreshAllSpawnedActorAttachments);
+	DataStore->OnSystemDataChanged.AddUObject(this, &AMikanClient::HandleSystemDataChanged);
 
 	// If the engine subsystem is already connected (e.g. PIE starting mid-session),
 	// sync all actors immediately
@@ -223,6 +224,7 @@ void AMikanClient::UnbindFromEngineSubsystem()
 	{
 		DataStore->OnComponentListChanged.RemoveAll(this);
 		DataStore->OnComponentsBatchRefreshed.RemoveAll(this);
+		DataStore->OnSystemDataChanged.RemoveAll(this);
 		DataStore = nullptr;
 	}
 
@@ -249,7 +251,60 @@ void AMikanClient::SetActiveMikanScene(AMikanSceneActor* DesiredScene)
 		if (ActiveMikanScene != nullptr)
 			ActiveMikanScene->HandleSceneActivated();
 
+		RefreshSceneVisibility();
+
 		OnActiveSceneChanged.Broadcast(OldScene, ActiveMikanScene);
+	}
+}
+
+void AMikanClient::RefreshActiveSceneFromEditor()
+{
+	if (!DataStore)
+	{
+		return;
+	}
+
+	UMikanComponentSystem* SceneSystem = DataStore->GetComponentSystem(MikanSceneSystemValues::k_systemName);
+	if (!SceneSystem)
+	{
+		return;
+	}
+
+	UMikanSceneSystemData* SceneSystemData = SceneSystem->GetTypedSystemData<UMikanSceneSystemData>();
+	if (!SceneSystemData)
+	{
+		return;
+	}
+
+	// The actor may not be spawned yet when the system values land first. The batch-refresh
+	// path calls this again once every actor exists, so the order of the two arrivals is moot.
+	AMikanSceneActor* DesiredScene = Cast<AMikanSceneActor>(
+		GetTransformActorById(SceneSystemData->GetCurrentSceneId()));
+
+	SetActiveMikanScene(DesiredScene);
+}
+
+void AMikanClient::RefreshSceneVisibility()
+{
+	FMikanSystemActors* SceneActors = SystemActorTable.Find(FString(MikanSceneSystemValues::k_systemName));
+	if (!SceneActors)
+	{
+		return;
+	}
+
+	for (const auto& Pair : SceneActors->SpawnedActorsTable)
+	{
+		AMikanSceneActor* SceneActor = Cast<AMikanSceneActor>(Pair.Value);
+		if (!SceneActor)
+		{
+			continue;
+		}
+
+		UMikanSceneData* SceneData = SceneActor->GetSceneData();
+		const bool bForceRender = SceneData && SceneData->GetForceRender();
+		const bool bVisible = (SceneActor == ActiveMikanScene) || bForceRender;
+
+		SceneActor->SetSceneSubtreeHidden(!bVisible);
 	}
 }
 
@@ -376,6 +431,17 @@ void AMikanClient::HandleComponentListChanged(
 	SyncSystemSpawnedActors(System, bRefreshAttachments);
 }
 
+void AMikanClient::HandleSystemDataChanged(const UMikanComponentSystem* System, const FString& FieldName)
+{
+	// An empty field name is the initial fetch, which carries current_scene_id along with
+	// everything else the system holds
+	if (System && System->GetSystemName() == MikanSceneSystemValues::k_systemName
+		&& (FieldName.IsEmpty() || FieldName == "current_scene_id"))
+	{
+		RefreshActiveSceneFromEditor();
+	}
+}
+
 void AMikanClient::SyncSystemSpawnedActors(
 	const UMikanComponentSystem* System,
 	bool bRefreshAttachments)
@@ -478,6 +544,11 @@ void AMikanClient::RefreshAllSpawnedActorAttachments()
 			}
 		}
 	}
+
+	// Attachment is what the hide walk follows, and newly spawned actors arrive visible,
+	// so the scene gate is re-applied every time the tree is rebuilt
+	RefreshActiveSceneFromEditor();
+	RefreshSceneVisibility();
 }
 
 const AMikanTransformActor* AMikanClient::GetTransformActorByIdConst(int32 TransformID) const

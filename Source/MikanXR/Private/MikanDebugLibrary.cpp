@@ -207,6 +207,20 @@ TArray<FString> UMikanDebugLibrary::DescribeComponent(const FString& SystemName,
 		return Lines;
 	}
 
+	// A component id of -1 names the system itself, matching how Mikan addresses
+	// system-level properties on the wire and in its own automation channel
+	if (ComponentId == INVALID_MIKAN_ID)
+	{
+		const UMikanSystemData* SystemData = System->GetSystemData();
+		if (!SystemData)
+		{
+			return ErrorLines(FString::Printf(TEXT("no system values in %s"), *SystemName));
+		}
+
+		SystemData->Describe(Lines);
+		return Lines;
+	}
+
 	const UMikanComponentData* ComponentData = System->FindComponentDataById(ComponentId);
 	if (!ComponentData)
 	{

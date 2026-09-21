@@ -33,6 +33,10 @@ struct MIKAN_API STRUCT(Serialization::CodeGenModule("MikanSceneTypes")) MikanSc
 
 	FIELD() MikanCompositorID display_compositor_id= INVALID_MIKAN_ID;
 
+	// Draws this scene's geometry even while another scene is the current one.
+	// Without it only the current scene's subtree renders.
+	FIELD() bool force_render= false;
+
 #ifdef MIKANAPI_REFLECTION_ENABLED
 	MikanSceneComponentValues_GENERATED
 #endif
