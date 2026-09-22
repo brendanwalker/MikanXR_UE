@@ -10,9 +10,15 @@
 #include "MikanEngineSubsystem.generated.h"
 
 struct MikanCameraNewFrameEvent;
+struct MikanCameraNewPropertiesEvent;
+struct MikanCompositorStartedEvent;
+struct MikanCompositorStoppedEvent;
 
-// C++ multicast delegate for raw camera frame (Mikan types not usable in Blueprint)
+// C++ multicast delegates for raw camera and compositor events (Mikan types not usable in Blueprint)
 DECLARE_MULTICAST_DELEGATE_OneParam(FMikanCameraNewFrameRawDelegate, const MikanCameraNewFrameEvent&);
+DECLARE_MULTICAST_DELEGATE_OneParam(FMikanCameraNewPropertiesRawDelegate, const MikanCameraNewPropertiesEvent&);
+DECLARE_MULTICAST_DELEGATE_OneParam(FMikanCompositorStartedRawDelegate, const MikanCompositorStartedEvent&);
+DECLARE_MULTICAST_DELEGATE_OneParam(FMikanCompositorStoppedRawDelegate, const MikanCompositorStoppedEvent&);
 
 // Blueprint-compatible delegates (shared with AMikanClient via this header)
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FMikanSimpleEvent);
@@ -105,14 +111,20 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FMikanRemoteControlEvent OnRemoteControlEvent;
 
-	// Raw camera frame — C++ only (Mikan types not usable in Blueprint)
+	// Raw camera and compositor events — C++ only (Mikan types not usable in Blueprint)
 	FMikanCameraNewFrameRawDelegate OnCameraNewFrameRaw;
+	FMikanCameraNewPropertiesRawDelegate OnCameraNewPropertiesRaw;
+	FMikanCompositorStartedRawDelegate OnCompositorStartedRaw;
+	FMikanCompositorStoppedRawDelegate OnCompositorStoppedRaw;
 
 protected:
 	void HandleMikanEvent(MikanEventPtr mikanEvent);
 	void HandleMikanConnected();
 	void HandleMikanDisconnected();
 	void HandleCameraNewFrame(const MikanCameraNewFrameEvent& newFrameEvent);
+	void HandleCameraNewProperties(const MikanCameraNewPropertiesEvent& newPropertiesEvent);
+	void HandleCompositorStarted(const MikanCompositorStartedEvent& startedEvent);
+	void HandleCompositorStopped(const MikanCompositorStoppedEvent& stoppedEvent);
 	void HandleComponentPropertyChanged(const struct MikanPropertyUpdateEvent& PropertyUpdateEvent);
 	void HandleLightDMXDataChanged(const struct MikanLightDMXDataChangedEvent& LightDMXDataEvent);
 	void HandleScriptMessage(const struct MikanScriptMessagePostedEvent& ScriptMessageEvent);

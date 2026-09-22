@@ -5,6 +5,7 @@
 #include "MikanPropertyRequests.h"
 #include "MikanMath.h"
 #include "MikanCameraEvents.h"
+#include "MikanCompositorEvents.h"
 #include "MikanAPI.h"
 #include "Engine/World.h"
 #include "GameFramework/WorldSettings.h"
@@ -182,6 +183,9 @@ void AMikanClient::BindToEngineSubsystem()
 	EngineSubsystem->OnDMXDataChanged.AddUniqueDynamic(this, &AMikanClient::HandleDMXDataChanged);
 	EngineSubsystem->OnScriptMessage.AddUniqueDynamic(this, &AMikanClient::HandleScriptMessage);
 	EngineSubsystem->OnCameraNewFrameRaw.AddUObject(this, &AMikanClient::HandleCameraNewFrameRaw);
+	EngineSubsystem->OnCameraNewPropertiesRaw.AddUObject(this, &AMikanClient::HandleCameraNewPropertiesRaw);
+	EngineSubsystem->OnCompositorStartedRaw.AddUObject(this, &AMikanClient::HandleCompositorStartedRaw);
+	EngineSubsystem->OnCompositorStoppedRaw.AddUObject(this, &AMikanClient::HandleCompositorStoppedRaw);
 
 	DataStore = EngineSubsystem->GetDataStore();
 	DataStore->OnComponentListChanged.AddUObject(this, &AMikanClient::HandleComponentListChanged);
@@ -236,6 +240,9 @@ void AMikanClient::UnbindFromEngineSubsystem()
 		EngineSubsystem->OnDMXDataChanged.RemoveDynamic(this, &AMikanClient::HandleDMXDataChanged);
 		EngineSubsystem->OnScriptMessage.RemoveDynamic(this, &AMikanClient::HandleScriptMessage);
 		EngineSubsystem->OnCameraNewFrameRaw.RemoveAll(this);
+		EngineSubsystem->OnCameraNewPropertiesRaw.RemoveAll(this);
+		EngineSubsystem->OnCompositorStartedRaw.RemoveAll(this);
+		EngineSubsystem->OnCompositorStoppedRaw.RemoveAll(this);
 	}
 }
 
@@ -617,44 +624,27 @@ void AMikanClient::HandleCameraNewFrameRaw(const MikanCameraNewFrameEvent& NewFr
 	if (!OnNewFrameEvent.IsBound())
 		return;
 
-	// Update the capture actor transform
 	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
+	OnNewFrameEvent.Broadcast(MakeUnrealCameraEvent(NewFrameEvent, MetersToUU, NewFrameEvent.frame));
+}
 
-	const FVector CameraPosition = FMikanMath::MikanVector3fToFVector(NewFrameEvent.camera_position) * MetersToUU;
-	const FVector CameraForward = FMikanMath::MikanVector3fToFVector(NewFrameEvent.camera_forward);
-	const FVector CameraUp = FMikanMath::MikanVector3fToFVector(NewFrameEvent.camera_up);
-	const FQuat CameraQuat = FRotationMatrix::MakeFromXZ(CameraForward, CameraUp).ToQuat();
-	const FTransform CameraTransformInScene(CameraQuat, CameraPosition);
+void AMikanClient::HandleCameraNewPropertiesRaw(const MikanCameraNewPropertiesEvent& NewPropertiesEvent)
+{
+	if (!OnCameraPropertiesEvent.IsBound())
+		return;
 
-	// Update the capture components projection matrices
-	float NearClippingPlaneUU = NewFrameEvent.z_bounds.x * MetersToUU;
-	float FarClippingPlaneUU = NewFrameEvent.z_bounds.y * MetersToUU;
-	const FMatrix ProjectionMatrix =
-		FMikanMath::ComputeProjectionMatFromCameraIntrinsics(
-			NewFrameEvent.pixel_size.x,
-			NewFrameEvent.pixel_size.y,
-			NewFrameEvent.focal_length.x,
-			NewFrameEvent.focal_length.y,
-			NewFrameEvent.principal_point.x,
-			NewFrameEvent.principal_point.y,
-			NearClippingPlaneUU,
-			FarClippingPlaneUU);
+	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
+	OnCameraPropertiesEvent.Broadcast(MakeUnrealCameraEvent(NewPropertiesEvent, MetersToUU, -1));
+}
 
-	// Extract the Horizontal FOV from the given ProjectionMatrix
-	const float ExtractedHalfFOVX = FMath::Atan(1.f / ProjectionMatrix.M[0][0]);
-	const float HorizontalFOVRadians = 2.f * ExtractedHalfFOVX;
-	const float HorizontalFOVDegrees = FMath::RadiansToDegrees(HorizontalFOVRadians);
+void AMikanClient::HandleCompositorStartedRaw(const MikanCompositorStartedEvent& StartedEvent)
+{
+	if (OnCompositorStarted.IsBound())
+		OnCompositorStarted.Broadcast(StartedEvent.compositor_id, StartedEvent.camera_id);
+}
 
-	FMikanCameraNewFrameEvent UnrealNewFrameEvent = {};
-	UnrealNewFrameEvent.CameraID = NewFrameEvent.camera_id;
-	UnrealNewFrameEvent.CameraTransform = CameraTransformInScene;
-	UnrealNewFrameEvent.ProjectionMatrix= ProjectionMatrix;
-	UnrealNewFrameEvent.NearClippingPlaneUU= NearClippingPlaneUU;
-	UnrealNewFrameEvent.FarClippingPlaneUU= FarClippingPlaneUU;
-	UnrealNewFrameEvent.HorizontalFOVDegrees= HorizontalFOVDegrees;
-	UnrealNewFrameEvent.FrameWidth= NewFrameEvent.pixel_size.x;
-	UnrealNewFrameEvent.FrameHeight= NewFrameEvent.pixel_size.y;
-	UnrealNewFrameEvent.FrameIndex= NewFrameEvent.frame;
-	
-	OnNewFrameEvent.Broadcast(UnrealNewFrameEvent);
+void AMikanClient::HandleCompositorStoppedRaw(const MikanCompositorStoppedEvent& StoppedEvent)
+{
+	if (OnCompositorStopped.IsBound())
+		OnCompositorStopped.Broadcast(StoppedEvent.compositor_id, StoppedEvent.camera_id);
 }

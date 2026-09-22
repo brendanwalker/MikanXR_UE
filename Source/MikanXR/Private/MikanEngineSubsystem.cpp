@@ -1,6 +1,7 @@
 #include "MikanEngineSubsystem.h"
 #include "MikanAPI.h"
 #include "MikanCameraEvents.h"
+#include "MikanCompositorEvents.h"
 #include "MikanClientRequests.h"
 #include "MikanClientEvents.h"
 #include "MikanDataStore.h"
@@ -276,6 +277,21 @@ void UMikanEngineSubsystem::HandleMikanEvent(MikanEventPtr mikanEvent)
 		auto newFrameEvent = std::static_pointer_cast<MikanCameraNewFrameEvent>(mikanEvent);
 		HandleCameraNewFrame(*newFrameEvent.get());
 	}
+	else if (typeid(*mikanEvent) == typeid(MikanCameraNewPropertiesEvent))
+	{
+		auto newPropertiesEvent = std::static_pointer_cast<MikanCameraNewPropertiesEvent>(mikanEvent);
+		HandleCameraNewProperties(*newPropertiesEvent.get());
+	}
+	else if (typeid(*mikanEvent) == typeid(MikanCompositorStartedEvent))
+	{
+		auto startedEvent = std::static_pointer_cast<MikanCompositorStartedEvent>(mikanEvent);
+		HandleCompositorStarted(*startedEvent.get());
+	}
+	else if (typeid(*mikanEvent) == typeid(MikanCompositorStoppedEvent))
+	{
+		auto stoppedEvent = std::static_pointer_cast<MikanCompositorStoppedEvent>(mikanEvent);
+		HandleCompositorStopped(*stoppedEvent.get());
+	}
 	else if (typeid(*mikanEvent) == typeid(MikanLightDMXDataChangedEvent))
 	{
 		auto lightDMXDataEvent = std::static_pointer_cast<MikanLightDMXDataChangedEvent>(mikanEvent);
@@ -332,6 +348,21 @@ void UMikanEngineSubsystem::HandleCameraNewFrame(const MikanCameraNewFrameEvent&
 {
 	// Broadcast raw metric values — world subsystem applies WorldToMeters scale
 	OnCameraNewFrameRaw.Broadcast(newFrameEvent);
+}
+
+void UMikanEngineSubsystem::HandleCameraNewProperties(const MikanCameraNewPropertiesEvent& newPropertiesEvent)
+{
+	OnCameraNewPropertiesRaw.Broadcast(newPropertiesEvent);
+}
+
+void UMikanEngineSubsystem::HandleCompositorStarted(const MikanCompositorStartedEvent& startedEvent)
+{
+	OnCompositorStartedRaw.Broadcast(startedEvent);
+}
+
+void UMikanEngineSubsystem::HandleCompositorStopped(const MikanCompositorStoppedEvent& stoppedEvent)
+{
+	OnCompositorStoppedRaw.Broadcast(stoppedEvent);
 }
 
 void UMikanEngineSubsystem::HandleComponentPropertyChanged(const MikanPropertyUpdateEvent& PropertyUpdateEvent)

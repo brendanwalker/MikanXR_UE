@@ -75,14 +75,14 @@ void UMikanCaptureComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		MikanClient->OnRenderableUnregistered.RemoveDynamic(this, &UMikanCaptureComponent::HandleMikanRenderableUnregistered);
 	}
 
-	// Release the staging texture. We flush first so no in-flight render command still references it.
-	if (SharedStagingTexture.IsValid())
+	// Release the staging ring. We flush first so no in-flight render command still references it.
+	FlushRenderingCommands();
+	for (FStagingSlot& Slot : StagingSlots)
 	{
-		FlushRenderingCommands();
-		SharedStagingTexture.SafeRelease();
-		SharedStagingWidth = 0;
-		SharedStagingHeight = 0;
-		SharedStagingFormat = PF_Unknown;
+		Slot.Texture.SafeRelease();
+		Slot.Width = 0;
+		Slot.Height = 0;
+		Slot.Format = PF_Unknown;
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -117,19 +117,82 @@ void UMikanCaptureComponent::CaptureFrame()
 	if (TextureTarget != nullptr)
 	{
 		// Enqueues the scene capture on the render thread. The GPU work is NOT finished when
-		// this returns, so we don't read the render target here - see PublishCapturedFrame().
+		// this returns; the owning actor copies the target to staging behind it and waits a fence.
 		CaptureScene();
 	}
 }
 
-void UMikanCaptureComponent::PublishCapturedFrame(int32 CameraId)
+bool UMikanCaptureComponent::PrepareStagingCopy(UTextureRenderTarget2D* SourceTarget, int32 SlotIndex, FStagingCopy& OutCopy)
 {
-	PublishRenderTarget(CameraId, TextureTarget);
+	if (SourceTarget == nullptr || SlotIndex < 0 || SlotIndex >= kStagingRingDepth)
+	{
+		return false;
+	}
+
+	FTextureRenderTargetResource* RTResource = SourceTarget->GameThread_GetRenderTargetResource();
+	if (RTResource == nullptr)
+	{
+		return false;
+	}
+
+	const int32 Width = SourceTarget->SizeX;
+	const int32 Height = SourceTarget->SizeY;
+	const EPixelFormat Format = SourceTarget->GetFormat();
+	if (Width <= 0 || Height <= 0 || Format == PF_Unknown)
+	{
+		return false;
+	}
+
+	OutCopy.Component = this;
+	OutCopy.Resource = RTResource;
+	OutCopy.SlotIndex = SlotIndex;
+	OutCopy.Width = Width;
+	OutCopy.Height = Height;
+	OutCopy.Format = Format;
+
+	return true;
 }
 
-void UMikanCaptureComponent::PublishRenderTarget(int32 CameraId, UTextureRenderTarget2D* SourceTarget)
+void UMikanCaptureComponent::ExecuteStagingCopy_RenderThread(FRHICommandListImmediate& RHICmdList, const FStagingCopy& Copy)
 {
-	if (SourceTarget == nullptr)
+	FStagingSlot& Slot = Copy.Component->StagingSlots[Copy.SlotIndex];
+
+	// (Re)create the slot's staging texture if it is missing or the size/format changed.
+	if (!Slot.Texture.IsValid() || Slot.Width != Copy.Width || Slot.Height != Copy.Height || Slot.Format != Copy.Format)
+	{
+		FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("MikanSharedStaging"), Copy.Width, Copy.Height, Copy.Format)
+				.SetFlags(ETextureCreateFlags::ShaderResource
+						  | ETextureCreateFlags::RenderTargetable
+						  | ETextureCreateFlags::Shared);
+
+		Slot.Texture = RHICmdList.CreateTexture(Desc);
+		Slot.Width = Copy.Width;
+		Slot.Height = Copy.Height;
+		Slot.Format = Copy.Format;
+	}
+
+	FRHITexture* Src = Copy.Resource->GetRenderTargetTexture();
+	FRHITexture* Dst = Slot.Texture.GetReference();
+	if (Src == nullptr || Dst == nullptr)
+	{
+		return;
+	}
+
+	RHICmdList.Transition(FRHITransitionInfo(Src, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+	RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+
+	RHICmdList.CopyTexture(Src, Dst, FRHICopyTextureInfo());
+
+	// Leave the staging texture in SRVMask so its resource state matches the GENERIC_READ
+	// state Mikan wraps it with - this is what stops 11on12 and Unreal's state tracker from
+	// disagreeing about the resource's state.
+	RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+}
+
+void UMikanCaptureComponent::PublishSharedStaging(int32 CameraId, int32 SlotIndex)
+{
+	if (SlotIndex < 0 || SlotIndex >= kStagingRingDepth)
 	{
 		return;
 	}
@@ -143,13 +206,17 @@ void UMikanCaptureComponent::PublishRenderTarget(int32 CameraId, UTextureRenderT
 		return;
 	}
 
-	// Copy the captured render target into our dedicated staging texture and get its native
-	// handle. We hand Mikan this staging texture rather than the live render target so Unreal
-	// never re-renders into the resource Mikan has wrapped for Spout - that dual ownership of one
+	const FStagingSlot& Slot = StagingSlots[SlotIndex];
+	if (!Slot.Texture.IsValid())
+	{
+		return;
+	}
+
+	// We hand Mikan the staging texture rather than the live render target so Unreal never
+	// re-renders into the resource Mikan has wrapped for Spout - that dual ownership of one
 	// resource's D3D12 state was the source of the "before state does not match" barrier errors
-	// and the residual flicker. UpdateSharedStagingTexture() also blocks until the GPU copy is
-	// complete, so Mikan reads a fully rendered, settled texture.
-	void* NativeTexturePtr = UpdateSharedStagingTexture(SourceTarget);
+	// and the residual flicker.
+	void* NativeTexturePtr = Slot.Texture->GetNativeResource();
 	if (NativeTexturePtr == nullptr)
 	{
 		return;
@@ -186,82 +253,10 @@ void UMikanCaptureComponent::PublishRenderTarget(int32 CameraId, UTextureRenderT
 			MikanAPI->sendRequest(writeRequest);
 		}
 		break;
+	case EMikanCaptureKind::ShadowReference:
+		// The reference pass is only ever an input to the shadow divide
+		break;
 	}
-}
-
-void* UMikanCaptureComponent::UpdateSharedStagingTexture(UTextureRenderTarget2D* SourceTarget)
-{
-	if (SourceTarget == nullptr)
-	{
-		return nullptr;
-	}
-
-	FTextureRenderTargetResource* RTResource = SourceTarget->GameThread_GetRenderTargetResource();
-	if (RTResource == nullptr)
-	{
-		return nullptr;
-	}
-
-	const int32 Width = SourceTarget->SizeX;
-	const int32 Height = SourceTarget->SizeY;
-	const EPixelFormat Format = SourceTarget->GetFormat();
-	if (Width <= 0 || Height <= 0 || Format == PF_Unknown)
-	{
-		return nullptr;
-	}
-
-	ENQUEUE_RENDER_COMMAND(MikanCopyToSharedStaging)(
-		[this, RTResource, Width, Height, Format](FRHICommandListImmediate& RHICmdList)
-		{
-			// (Re)create the staging texture if it is missing or the size/format changed.
-			if (!SharedStagingTexture.IsValid()
-				|| SharedStagingWidth != Width
-				|| SharedStagingHeight != Height
-				|| SharedStagingFormat != Format)
-			{
-				FRHITextureCreateDesc Desc =
-					FRHITextureCreateDesc::Create2D(TEXT("MikanSharedStaging"), Width, Height, Format)
-						.SetFlags(ETextureCreateFlags::ShaderResource
-								  | ETextureCreateFlags::RenderTargetable
-								  | ETextureCreateFlags::Shared);
-
-				SharedStagingTexture = RHICmdList.CreateTexture(Desc);
-				SharedStagingWidth = Width;
-				SharedStagingHeight = Height;
-				SharedStagingFormat = Format;
-			}
-
-			FRHITexture* Src = RTResource->GetRenderTargetTexture();
-			FRHITexture* Dst = SharedStagingTexture.GetReference();
-			if (Src == nullptr || Dst == nullptr)
-			{
-				return;
-			}
-
-			RHICmdList.Transition(FRHITransitionInfo(Src, ERHIAccess::Unknown, ERHIAccess::CopySrc));
-			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::Unknown, ERHIAccess::CopyDest));
-
-			RHICmdList.CopyTexture(Src, Dst, FRHICopyTextureInfo());
-
-			// Leave the staging texture in SRVMask so its resource state matches the GENERIC_READ
-			// state Mikan wraps it with - this is what stops 11on12 and Unreal's state tracker from
-			// disagreeing about the resource's state.
-			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
-
-			// Block until the GPU has finished the copy so Mikan reads a complete, settled texture.
-			RHICmdList.SubmitCommandsAndFlushGPU();
-		});
-
-	// Wait for the render thread (and the GPU flush above) to complete before reading the staging
-	// texture's native handle back on the game thread.
-	FlushRenderingCommands();
-
-	if (!SharedStagingTexture.IsValid())
-	{
-		return nullptr;
-	}
-
-	return SharedStagingTexture->GetNativeResource();
 }
 
 AMikanClient* UMikanCaptureComponent::GetOwnerMikanClient() const

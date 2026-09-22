@@ -4,6 +4,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "MikanEngineSubsystem.h"
 #include "MikanCameraEvents.h"
+#include "MikanMath.h"
 #include "GameFramework/Actor.h"
 
 #include "MikanClient.generated.h"
@@ -25,6 +26,7 @@ struct FMikanCameraNewFrameEvent
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMikanNewFrameEvent, const FMikanCameraNewFrameEvent&, NewFrameEvent);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FMikanCompositorEvent, int32, CompositorId, int32, CameraId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FMikanActiveSceneChangeEvent, class AMikanSceneActor*, OldScene, class AMikanSceneActor*, NewScene);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMikanRenderableEvent, class UMikanRenderableComponent*, Renderable);
 
@@ -55,6 +57,50 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	inline class AMikanSceneActor* GetActiveMikanScene() const { return ActiveMikanScene; }
+
+	// Converts the metric camera state the editor sends into Unreal units. The frame event, the
+	// properties event, and the properties response share every field but the frame index, so
+	// one conversion serves all three.
+	template <typename TCameraEvent>
+	static FMikanCameraNewFrameEvent MakeUnrealCameraEvent(const TCameraEvent& CameraEvent, float MetersToUU, int64_t FrameIndex)
+	{
+		const FVector CameraPosition = FMikanMath::MikanVector3fToFVector(CameraEvent.camera_position) * MetersToUU;
+		const FVector CameraForward = FMikanMath::MikanVector3fToFVector(CameraEvent.camera_forward);
+		const FVector CameraUp = FMikanMath::MikanVector3fToFVector(CameraEvent.camera_up);
+		const FQuat CameraQuat = FRotationMatrix::MakeFromXZ(CameraForward, CameraUp).ToQuat();
+		const FTransform CameraTransformInScene(CameraQuat, CameraPosition);
+
+		const float NearClippingPlaneUU = CameraEvent.z_bounds.x * MetersToUU;
+		const float FarClippingPlaneUU = CameraEvent.z_bounds.y * MetersToUU;
+		const FMatrix ProjectionMatrix =
+			FMikanMath::ComputeProjectionMatFromCameraIntrinsics(
+				CameraEvent.pixel_size.x,
+				CameraEvent.pixel_size.y,
+				CameraEvent.focal_length.x,
+				CameraEvent.focal_length.y,
+				CameraEvent.principal_point.x,
+				CameraEvent.principal_point.y,
+				NearClippingPlaneUU,
+				FarClippingPlaneUU);
+
+		// Extract the Horizontal FOV from the given ProjectionMatrix
+		const float ExtractedHalfFOVX = FMath::Atan(1.f / ProjectionMatrix.M[0][0]);
+		const float HorizontalFOVRadians = 2.f * ExtractedHalfFOVX;
+		const float HorizontalFOVDegrees = FMath::RadiansToDegrees(HorizontalFOVRadians);
+
+		FMikanCameraNewFrameEvent UnrealEvent = {};
+		UnrealEvent.CameraID = CameraEvent.camera_id;
+		UnrealEvent.CameraTransform = CameraTransformInScene;
+		UnrealEvent.ProjectionMatrix= ProjectionMatrix;
+		UnrealEvent.NearClippingPlaneUU= NearClippingPlaneUU;
+		UnrealEvent.FarClippingPlaneUU= FarClippingPlaneUU;
+		UnrealEvent.HorizontalFOVDegrees= HorizontalFOVDegrees;
+		UnrealEvent.FrameWidth= CameraEvent.pixel_size.x;
+		UnrealEvent.FrameHeight= CameraEvent.pixel_size.y;
+		UnrealEvent.FrameIndex= FrameIndex;
+
+		return UnrealEvent;
+	}
 
 	// Points the active scene at whichever scene the Mikan editor has current. Blueprints can
 	// still override the choice afterwards through SetActiveMikanScene.
@@ -172,6 +218,17 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FMikanNewFrameEvent OnNewFrameEvent;
 
+	// The same camera state without a frame to render it for, carried with FrameIndex -1.
+	// The editor sends it for a free-running camera whenever the state changes.
+	UPROPERTY(BlueprintAssignable)
+	FMikanNewFrameEvent OnCameraPropertiesEvent;
+
+	// A compositor began or stopped consuming frames for a camera
+	UPROPERTY(BlueprintAssignable)
+	FMikanCompositorEvent OnCompositorStarted;
+	UPROPERTY(BlueprintAssignable)
+	FMikanCompositorEvent OnCompositorStopped;
+
 #if WITH_EDITOR
 	// Outcome of the last editor-driven fetch. The details panel shows it so a fetch that never
 	// gets its answers reads as a failure instead of as a button that did nothing.
@@ -204,6 +261,9 @@ protected:
 	UFUNCTION() 
 	void HandleScriptMessage(const FString& Message);
 	void HandleCameraNewFrameRaw(const MikanCameraNewFrameEvent& NewFrameEvent);
+	void HandleCameraNewPropertiesRaw(const struct MikanCameraNewPropertiesEvent& NewPropertiesEvent);
+	void HandleCompositorStartedRaw(const struct MikanCompositorStartedEvent& StartedEvent);
+	void HandleCompositorStoppedRaw(const struct MikanCompositorStoppedEvent& StoppedEvent);
 
 	void SyncAllSpawnedActors();
 	void HandleComponentListChanged(const UMikanComponentSystem* System);

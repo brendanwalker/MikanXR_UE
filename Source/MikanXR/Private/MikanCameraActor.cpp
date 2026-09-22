@@ -17,6 +17,23 @@
 #include "Kismet/KismetRenderingLibrary.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "GameFramework/WorldSettings.h"
+#include "RenderingThread.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "RHIResources.h"
+#include "TextureResource.h"
+
+DECLARE_STATS_GROUP(TEXT("MikanXR"), STATGROUP_MikanXR, STATCAT_Advanced);
+DECLARE_FLOAT_COUNTER_STAT(TEXT("Captures / s"), STAT_MikanCapturesPerSecond, STATGROUP_MikanXR);
+DECLARE_FLOAT_COUNTER_STAT(TEXT("Publishes / s"), STAT_MikanPublishesPerSecond, STATGROUP_MikanXR);
+DECLARE_FLOAT_COUNTER_STAT(TEXT("Fence wait (frames, avg)"), STAT_MikanFenceWaitFrames, STATGROUP_MikanXR);
+DECLARE_DWORD_COUNTER_STAT(TEXT("Pending frame events"), STAT_MikanPendingFrameEvents, STATGROUP_MikanXR);
+DECLARE_DWORD_COUNTER_STAT(TEXT("Captures in flight"), STAT_MikanCapturesInFlight, STATGROUP_MikanXR);
+
+// How often the capture statistics are logged
+static constexpr float kMikanCaptureStatsWindowSeconds = 5.f;
 
 UE_DISABLE_OPTIMIZATION
 
@@ -30,6 +47,8 @@ void UMikanCameraData::Initialize(const Serialization::PolymorphicObjectPtr& InV
 	TrackingMountId = CameraValues->tracking_mount_id;
 	VideoSourceId = CameraValues->video_source_id;
 	TrackingFrameDelay = CameraValues->tracking_frame_delay;
+	FrameSyncMode = (int32)CameraValues->frame_sync_mode;
+	bPoseDrivenPerFrame = CameraValues->pose_driven_per_frame;
 }
 
 bool UMikanCameraData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
@@ -54,6 +73,16 @@ bool UMikanCameraData::ApplyMikanValue(const FString& FieldName, const MikanVari
 		TrackingFrameDelay = FieldValue.getIntValue();
 		return true;
 	}
+	else if (FieldName == "frame_sync_mode")
+	{
+		FrameSyncMode = FieldValue.getIntValue();
+		return true;
+	}
+	else if (FieldName == "pose_driven_per_frame")
+	{
+		bPoseDrivenPerFrame = FieldValue.getBoolValue();
+		return true;
+	}
 	else
 	{
 		return UMikanTransformData::ApplyMikanValue(FieldName, FieldValue);
@@ -67,6 +96,8 @@ void UMikanCameraData::Describe(TArray<FString>& OutLines) const
 	Mikan::AppendDescribeLine(OutLines, TEXT("tracking_mount_id"), TrackingMountId);
 	Mikan::AppendDescribeLine(OutLines, TEXT("video_source_id"), VideoSourceId);
 	Mikan::AppendDescribeLine(OutLines, TEXT("tracking_frame_delay"), TrackingFrameDelay);
+	Mikan::AppendDescribeLine(OutLines, TEXT("frame_sync_mode"), FrameSyncMode);
+	Mikan::AppendDescribeLine(OutLines, TEXT("pose_driven_per_frame"), bPoseDrivenPerFrame);
 }
 
 // -- AMikanFrameCaptureActor -----
@@ -152,10 +183,23 @@ void AMikanFrameCaptureActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get())
 	{
 		Subsystem->CancelRequest(PendingAllocateRequestHandle);
+		Subsystem->CancelRequest(PendingFrameRateRequestHandle);
+		Subsystem->CancelRequest(PendingPropertiesRequestHandle);
 	}
 	PendingAllocateRequestHandle = 0;
 	bAllocatePending = false;
+	PendingFrameRateRequestHandle = 0;
+	PendingPropertiesRequestHandle = 0;
 
+	// Tell the editor the render targets are gone before they are. The SDK keeps wraps of the
+	// staging textures it was handed, keyed by pointer, and a later session could be handed a
+	// recycled pointer that still matched a stale wrap.
+	if (OwnerCameraId != -1 && MikanAPI != nullptr && RenderTargetDesc.width > 0)
+	{
+		FreeRenderBuffers();
+	}
+
+	ResetCaptureState();
 	DisposeRenderTargets();
 
 	Super::EndPlay(EndPlayReason);
@@ -164,6 +208,8 @@ void AMikanFrameCaptureActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AMikanFrameCaptureActor::NotifyMikanComponentDataBound()
 {
 	OwnerCameraId = GetOwnerCameraActor()->GetCameraID();
+	RequestCameraProperties();
+	RequestVideoSourceFrameRate();
 }
 
 void AMikanFrameCaptureActor::NotifyMikanComponentDataUnbound()
@@ -175,101 +221,404 @@ void AMikanFrameCaptureActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	// Publish the frame we captured on the previous event. Deferring the shared-texture
-	// copy by one frame guarantees the GPU has finished the scene capture before Spout
-	// reads it on its own device.
-	// If you try to publishing immediately after CaptureScene() you will get
-	// a read-before-write flicker.
-	if (bHasPendingPublish && OwnerCameraId != -1)
+	UpdateCaptureStats(DeltaSeconds);
+
+	// Publish every capture whose GPU work has finished, oldest first
+	TryPublishCaptures();
+
+	if (OwnerCameraId == -1 || !bHasLatestCameraState)
 	{
-		ColorCaptureComponent->PublishCapturedFrame(OwnerCameraId);
-		if (DepthCaptureComponent)
+		return;
+	}
+
+	if (IsVideoFrameSynced())
+	{
+		// Render the oldest frame the editor asked for, at the pose it was asked for. One capture
+		// per tick: the engine renders once per tick, so a second one would only queue GPU work.
+		if (PendingFrameEvents.Num() == 0 || !CanBeginCapture())
 		{
-			DepthCaptureComponent->PublishCapturedFrame(OwnerCameraId);
+			return;
 		}
 
-		// Shadow buffer: divide the now-complete shadowed pass (A) by the reference pass (B) into
-		// the published shadow render target, then publish that. The captures were kicked off on the
-		// previous frame, so the GPU has finished A and B; the divide draw and the staging copy in
-		// PublishRenderTarget are enqueued in order on the render thread.
-		if (ShadowRenderTarget != nullptr)
+		const FMikanCameraNewFrameEvent& FrameEvent = PendingFrameEvents[0];
+		if (!EnsureRenderBuffers(FrameEvent.FrameWidth, FrameEvent.FrameHeight))
 		{
-			if (ShadowDivideMID != nullptr)
-			{
-				UKismetRenderingLibrary::DrawMaterialToRenderTarget(this, ShadowRenderTarget, ShadowDivideMID);
-				ShadowCaptureComponent->PublishRenderTarget(OwnerCameraId, ShadowRenderTarget);
-			}
-			else
-			{
-				// No divide material configured: fall back to publishing the raw shadowed pass (A).
-				ShadowCaptureComponent->PublishRenderTarget(OwnerCameraId, ShadowShadowedRenderTarget);
-			}
+			return;
 		}
 
-		PublishCameraRenderTargetTextures frameInfo;
-		frameInfo.camera_id = OwnerCameraId;
-		frameInfo.frame_index = PendingPublishFrameIndex;
+		ApplyCameraState(FrameEvent);
+		BeginCapture(FrameEvent.FrameIndex);
+		PendingFrameEvents.RemoveAt(0);
+	}
+	else
+	{
+		// Render on our own clock from the latest camera state, while a compositor is consuming.
+		// Time accumulates whether or not a capture is in flight, so the cap is a rate rather
+		// than a gap after each publish.
+		if (!bCompositorRunning)
+		{
+			CaptureAccumulatorSeconds = 0.f;
+			return;
+		}
 
-		MikanAPI->sendRequest(frameInfo);
+		const float CaptureIntervalSeconds = VideoSourceFrameRate > 0.f ? 1.f / VideoSourceFrameRate : 0.f;
+		CaptureAccumulatorSeconds = FMath::Min(CaptureAccumulatorSeconds + DeltaSeconds, 2.f * CaptureIntervalSeconds);
+		if (CaptureAccumulatorSeconds < CaptureIntervalSeconds || !CanBeginCapture())
+		{
+			return;
+		}
 
-		bHasPendingPublish= false;
+		if (!EnsureRenderBuffers(LatestCameraState.FrameWidth, LatestCameraState.FrameHeight))
+		{
+			return;
+		}
+
+		CaptureAccumulatorSeconds = FMath::Max(CaptureAccumulatorSeconds - CaptureIntervalSeconds, 0.f);
+		ApplyCameraState(LatestCameraState);
+		BeginCapture(-1);
 	}
 }
 
 // Mikan API Events
 void AMikanFrameCaptureActor::HandleNewCameraFrame(const FMikanCameraNewFrameEvent& NewFrameEvent)
 {
+	LatestCameraState = NewFrameEvent;
+	bHasLatestCameraState = true;
+	bCompositorRunning = true;
+
+	if (!IsVideoFrameSynced())
+	{
+		return;
+	}
+
+	// Queue the frame for Tick. Several events can arrive in one engine tick when the client is
+	// behind, and rendering each of them would only make it later, so the queue is bounded and
+	// the oldest go: the compositor has already composited past them.
+	PendingFrameEvents.Add(NewFrameEvent);
+
+	const int32 MaxPending = FMath::Max(MaxPendingFrameEvents, 1);
+	while (PendingFrameEvents.Num() > MaxPending)
+	{
+		DroppedFrameEventCount++;
+		if (DroppedFrameEventCount == 1 || (DroppedFrameEventCount % 100) == 0)
+		{
+			UE_LOG(MikanXRLog, Warning,
+				TEXT("HandleNewCameraFrame: Dropping frame %lld, client is behind the video frame rate (%llu dropped so far)"),
+				PendingFrameEvents[0].FrameIndex, DroppedFrameEventCount);
+		}
+		PendingFrameEvents.RemoveAt(0);
+	}
+}
+
+void AMikanFrameCaptureActor::HandleCameraProperties(const FMikanCameraNewFrameEvent& PropertiesEvent)
+{
+	LatestCameraState = PropertiesEvent;
+	bHasLatestCameraState = true;
+	bCompositorRunning = true;
+}
+
+void AMikanFrameCaptureActor::HandleCompositorStarted()
+{
+	bCompositorRunning = true;
+}
+
+void AMikanFrameCaptureActor::HandleCompositorStopped()
+{
+	bCompositorRunning = false;
+	PendingFrameEvents.Empty();
+}
+
+void AMikanFrameCaptureActor::HandleFrameSyncModeChanged()
+{
+	// Frames queued for the old mode are meaningless to the new one
+	PendingFrameEvents.Empty();
+	CaptureAccumulatorSeconds = 0.f;
+}
+
+void AMikanFrameCaptureActor::HandleVideoSourceChanged()
+{
+	RequestVideoSourceFrameRate();
+}
+
+bool AMikanFrameCaptureActor::IsVideoFrameSynced() const
+{
+	const AMikanCameraActor* CameraActor = GetOwnerCameraActor();
+	const UMikanCameraData* CameraData = CameraActor ? CameraActor->GetCameraData() : nullptr;
+
+	// Without camera data the safe assumption is the original behavior: one render per frame event
+	return CameraData ? CameraData->IsVideoFrameSynced() : true;
+}
+
+void AMikanFrameCaptureActor::ApplyCameraState(const FMikanCameraNewFrameEvent& CameraState)
+{
 	// Update the capture actor transform
-	SetActorRelativeTransform(NewFrameEvent.CameraTransform);
+	SetActorRelativeTransform(CameraState.CameraTransform);
 
 	// Update the capture components with the new projection matrix
-	ColorCaptureComponent->SetCustomProjectionMatrix(NewFrameEvent.ProjectionMatrix);
+	ColorCaptureComponent->SetCustomProjectionMatrix(CameraState.ProjectionMatrix);
 	if (DepthCaptureComponent)
 	{
-		DepthCaptureComponent->SetCustomProjectionMatrix(NewFrameEvent.ProjectionMatrix);
+		DepthCaptureComponent->SetCustomProjectionMatrix(CameraState.ProjectionMatrix);
 	}
-	ShadowCaptureComponent->SetCustomProjectionMatrix(NewFrameEvent.ProjectionMatrix);
-	ShadowReferenceCaptureComponent->SetCustomProjectionMatrix(NewFrameEvent.ProjectionMatrix);
-	SetDepthClippingPlanes(NewFrameEvent.NearClippingPlaneUU, NewFrameEvent.FarClippingPlaneUU);
+	ShadowCaptureComponent->SetCustomProjectionMatrix(CameraState.ProjectionMatrix);
+	ShadowReferenceCaptureComponent->SetCustomProjectionMatrix(CameraState.ProjectionMatrix);
+	SetDepthClippingPlanes(CameraState.NearClippingPlaneUU, CameraState.FarClippingPlaneUU);
 
 	DrawDebugCamera(
-		GetWorld(), 
-		GetActorLocation(), 
-		GetActorRotation(), 
-		NewFrameEvent.HorizontalFOVDegrees,
-		1.f, 
+		GetWorld(),
+		GetActorLocation(),
+		GetActorRotation(),
+		CameraState.HorizontalFOVDegrees,
+		1.f,
 		FColor::Red);
+}
 
-	// Attempt to render a new frame
-	if (EnsureRenderBuffers(NewFrameEvent.FrameWidth, NewFrameEvent.FrameHeight))
+bool AMikanFrameCaptureActor::CanBeginCapture() const
+{
+	// A slot frees when its capture publishes, so a full ring means the GPU is behind
+	return InFlightCaptures.Num() < UMikanCaptureComponent::kStagingRingDepth;
+}
+
+void AMikanFrameCaptureActor::BeginCapture(int64 FrameIndex)
+{
+	const int32 SlotIndex = NextStagingSlot;
+	NextStagingSlot = (NextStagingSlot + 1) % UMikanCaptureComponent::kStagingRingDepth;
+
+	// Kick off the scene captures. The GPU work is enqueued on the render thread.
+	ColorCaptureComponent->CaptureFrame();
+	if (DepthCaptureComponent)
 	{
-		// Warn if the last frame we rendered hasn't been publish yet
-		if (bHasPendingPublish)
+		DepthCaptureComponent->CaptureFrame();
+	}
+	ShadowCaptureComponent->CaptureFrame();
+	ShadowReferenceCaptureComponent->CaptureFrame();
+
+	// Shadow buffer: divide the shadowed pass (A) by the reference pass (B) into the published
+	// shadow render target. Enqueued behind the two captures, so it reads their finished results.
+	UTextureRenderTarget2D* PublishedShadowTarget = ShadowShadowedRenderTarget;
+	if (ShadowRenderTarget != nullptr && ShadowDivideMID != nullptr)
+	{
+		UKismetRenderingLibrary::DrawMaterialToRenderTarget(this, ShadowRenderTarget, ShadowDivideMID);
+		PublishedShadowTarget = ShadowRenderTarget;
+	}
+
+	// Copy every published target into its component's shared staging texture behind the
+	// captures, then write a fence so Tick can tell when the staging textures are settled
+	// without stalling the game thread on the render thread or the GPU.
+	TArray<UMikanCaptureComponent::FStagingCopy> StagingCopies;
+	UMikanCaptureComponent::FStagingCopy Copy;
+	if (ColorCaptureComponent->PrepareStagingCopy(ColorRenderTarget, SlotIndex, Copy))
+	{
+		StagingCopies.Add(Copy);
+	}
+	if (DepthCaptureComponent && DepthCaptureComponent->PrepareStagingCopy(DepthRenderTarget, SlotIndex, Copy))
+	{
+		StagingCopies.Add(Copy);
+	}
+	if (ShadowCaptureComponent->PrepareStagingCopy(PublishedShadowTarget, SlotIndex, Copy))
+	{
+		StagingCopies.Add(Copy);
+	}
+
+	// One fence per slot. The slot's previous capture has published by the time it is reused,
+	// so clearing here cannot race a poll.
+	if (SlotFences.Num() < UMikanCaptureComponent::kStagingRingDepth)
+	{
+		SlotFences.SetNum(UMikanCaptureComponent::kStagingRingDepth);
+	}
+	if (!SlotFences[SlotIndex].IsValid())
+	{
+		SlotFences[SlotIndex] = RHICreateGPUFence(TEXT("MikanCaptureFence"));
+	}
+	SlotFences[SlotIndex]->Clear();
+
+	FGPUFenceRHIRef Fence = SlotFences[SlotIndex];
+	ENQUEUE_RENDER_COMMAND(MikanCopyCapturesToStaging)(
+		[StagingCopies, Fence](FRHICommandListImmediate& RHICmdList)
 		{
-			UE_LOG(MikanXRLog, Warning, 
-				TEXT("HandleNewCameraFrame: New Frame %I64d stomping Pending Publish Frame %I64d"), 
-				NewFrameEvent.FrameIndex, PendingPublishFrameIndex);
+			for (const UMikanCaptureComponent::FStagingCopy& StagingCopy : StagingCopies)
+			{
+				UMikanCaptureComponent::ExecuteStagingCopy_RenderThread(RHICmdList, StagingCopy);
+			}
+			RHICmdList.WriteGPUFence(Fence);
+		});
+
+	FInFlightCapture InFlight;
+	InFlight.FrameIndex = FrameIndex;
+	InFlight.SlotIndex = SlotIndex;
+	InFlight.BeginFrame = GFrameCounter;
+	InFlightCaptures.Add(InFlight);
+	StatCapturesThisWindow++;
+}
+
+void AMikanFrameCaptureActor::TryPublishCaptures()
+{
+	// Captures complete in order on the GPU, so stop at the first fence still pending
+	while (InFlightCaptures.Num() > 0)
+	{
+		const FInFlightCapture& InFlight = InFlightCaptures[0];
+		const FGPUFenceRHIRef& Fence = SlotFences.IsValidIndex(InFlight.SlotIndex) ? SlotFences[InFlight.SlotIndex] : FGPUFenceRHIRef();
+		if (!Fence.IsValid() || !Fence->Poll())
+		{
+			return;
 		}
 
-		// Kick off the capture for this frame; it will be published on the next camera frame
-		// event once the GPU has finished rendering into the render targets.
-		ColorCaptureComponent->CaptureFrame();
-		if (DepthCaptureComponent)
+		if (OwnerCameraId != -1)
 		{
-			DepthCaptureComponent->CaptureFrame();
+			ColorCaptureComponent->PublishSharedStaging(OwnerCameraId, InFlight.SlotIndex);
+			if (DepthCaptureComponent)
+			{
+				DepthCaptureComponent->PublishSharedStaging(OwnerCameraId, InFlight.SlotIndex);
+			}
+			ShadowCaptureComponent->PublishSharedStaging(OwnerCameraId, InFlight.SlotIndex);
+
+			// A free-running capture carries no frame index; the editor serves its newest texture
+			PublishCameraRenderTargetTextures frameInfo;
+			frameInfo.camera_id = OwnerCameraId;
+			frameInfo.frame_index = InFlight.FrameIndex;
+
+			MikanAPI->sendRequest(frameInfo);
 		}
-		if (ShadowCaptureComponent)
-		{
-			ShadowCaptureComponent->CaptureFrame();
-		}
-		if (ShadowReferenceCaptureComponent)
-		{
-			ShadowReferenceCaptureComponent->CaptureFrame();
-		}
-		LastRenderedFrameIndex = NewFrameEvent.FrameIndex;
-		PendingPublishFrameIndex = NewFrameEvent.FrameIndex;
-		bHasPendingPublish = true;
+
+		const int32 FenceWaitFrames = (int32)(GFrameCounter - InFlight.BeginFrame);
+		StatPublishesThisWindow++;
+		StatFenceWaitFramesTotal += FenceWaitFrames;
+		StatFenceWaitFramesMax = FMath::Max(StatFenceWaitFramesMax, FenceWaitFrames);
+
+		InFlightCaptures.RemoveAt(0);
 	}
+}
+
+void AMikanFrameCaptureActor::UpdateCaptureStats(float DeltaSeconds)
+{
+	StatWindowSeconds += DeltaSeconds;
+	if (StatWindowSeconds >= kMikanCaptureStatsWindowSeconds)
+	{
+		StatCapturesPerSecond = StatCapturesThisWindow / StatWindowSeconds;
+		StatPublishesPerSecond = StatPublishesThisWindow / StatWindowSeconds;
+		StatFenceWaitFramesAverage =
+			StatPublishesThisWindow > 0 ? (float)StatFenceWaitFramesTotal / StatPublishesThisWindow : 0.f;
+
+		// Only worth a line while something is happening or was expected to
+		if (StatCapturesThisWindow > 0 || bCompositorRunning)
+		{
+			UE_LOG(MikanXRLog, Log,
+				TEXT("MikanFrameCapture camera %d: %.1f captures/s, %.1f publishes/s, fence wait avg %.1f max %d frames, %d in flight, %d pending, %llu dropped, %s"),
+				OwnerCameraId, StatCapturesPerSecond, StatPublishesPerSecond, StatFenceWaitFramesAverage,
+				StatFenceWaitFramesMax, InFlightCaptures.Num(), PendingFrameEvents.Num(), DroppedFrameEventCount,
+				IsVideoFrameSynced() ? TEXT("video frame sync") : TEXT("free running"));
+		}
+
+		StatWindowSeconds = 0.f;
+		StatCapturesThisWindow = 0;
+		StatPublishesThisWindow = 0;
+		StatFenceWaitFramesTotal = 0;
+		StatFenceWaitFramesMax = 0;
+	}
+
+	// Every camera in the project has a capture actor ticking, so the stats are summed across
+	// them rather than set, or whichever idle actor ticks last would report zero for all
+	INC_FLOAT_STAT_BY(STAT_MikanCapturesPerSecond, StatCapturesPerSecond);
+	INC_FLOAT_STAT_BY(STAT_MikanPublishesPerSecond, StatPublishesPerSecond);
+	INC_FLOAT_STAT_BY(STAT_MikanFenceWaitFrames, StatFenceWaitFramesAverage);
+	INC_DWORD_STAT_BY(STAT_MikanPendingFrameEvents, PendingFrameEvents.Num());
+	INC_DWORD_STAT_BY(STAT_MikanCapturesInFlight, InFlightCaptures.Num());
+}
+
+void AMikanFrameCaptureActor::ResetCaptureState()
+{
+	PendingFrameEvents.Empty();
+	InFlightCaptures.Empty();
+	NextStagingSlot = 0;
+	CaptureAccumulatorSeconds = 0.f;
+}
+
+void AMikanFrameCaptureActor::RequestCameraProperties()
+{
+	UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get();
+	if (!Subsystem || OwnerCameraId == -1)
+	{
+		return;
+	}
+
+	Subsystem->CancelRequest(PendingPropertiesRequestHandle);
+	PendingPropertiesRequestHandle = 0;
+
+	GetCameraProperties propertiesRequest;
+	propertiesRequest.camera_id = OwnerCameraId;
+
+	TWeakObjectPtr<AMikanFrameCaptureActor> WeakThis(this);
+	PendingPropertiesRequestHandle = Subsystem->SendRequestAsync(
+		propertiesRequest,
+		[WeakThis](const MikanResponsePtr& Response)
+		{
+			AMikanFrameCaptureActor* Self = WeakThis.Get();
+			if (!Self)
+			{
+				return;
+			}
+
+			Self->PendingPropertiesRequestHandle = 0;
+
+			if (Response->resultCode != MikanAPIResult::Success)
+			{
+				return;
+			}
+
+			// The pulled state is treated exactly like a pushed properties event. A frame or
+			// properties event that arrived in the meantime is newer, so it wins.
+			auto PropertiesResponse = std::static_pointer_cast<MikanCameraPropertiesResponse>(Response);
+			const float MetersToUU = Self->GetWorld()->GetWorldSettings()->WorldToMeters;
+			if (!Self->bHasLatestCameraState)
+			{
+				Self->LatestCameraState = AMikanClient::MakeUnrealCameraEvent(*PropertiesResponse, MetersToUU, -1);
+				Self->bHasLatestCameraState = true;
+			}
+			Self->bCompositorRunning = Self->bCompositorRunning || PropertiesResponse->compositor_running;
+		});
+}
+
+void AMikanFrameCaptureActor::RequestVideoSourceFrameRate()
+{
+	UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get();
+	const AMikanCameraActor* CameraActor = GetOwnerCameraActor();
+	const UMikanCameraData* CameraData = CameraActor ? CameraActor->GetCameraData() : nullptr;
+	if (!Subsystem || !CameraData)
+	{
+		return;
+	}
+
+	Subsystem->CancelRequest(PendingFrameRateRequestHandle);
+	PendingFrameRateRequestHandle = 0;
+	VideoSourceFrameRate = 0.f;
+
+	if (CameraData->GetVideoSourceId() == -1)
+	{
+		return;
+	}
+
+	GetVideoSourceMode modeRequest;
+	modeRequest.video_source_id = CameraData->GetVideoSourceId();
+
+	TWeakObjectPtr<AMikanFrameCaptureActor> WeakThis(this);
+	PendingFrameRateRequestHandle = Subsystem->SendRequestAsync(
+		modeRequest,
+		[WeakThis](const MikanResponsePtr& Response)
+		{
+			AMikanFrameCaptureActor* Self = WeakThis.Get();
+			if (!Self)
+			{
+				return;
+			}
+
+			Self->PendingFrameRateRequestHandle = 0;
+
+			if (Response->resultCode == MikanAPIResult::Success)
+			{
+				auto ModeResponse = std::static_pointer_cast<MikanVideoSourceModeResponse>(Response);
+				Self->VideoSourceFrameRate = ModeResponse->frame_rate;
+			}
+		});
 }
 
 void AMikanFrameCaptureActor::SetDepthClippingPlanes(
@@ -295,9 +644,9 @@ void AMikanFrameCaptureActor::SetDepthClippingPlanes(
 // Render Buffer Management
 void AMikanFrameCaptureActor::FreeRenderBuffers()
 {
-	// Drop any deferred capture so we don't try to publish into render targets that are
+	// Drop any pending or in-flight capture so we don't publish render targets that are
 	// being freed or recreated.
-	bHasPendingPublish = false;
+	ResetCaptureState();
 
 	FreeCameraRenderTargetTextures request;
 	request.camera_id = OwnerCameraId;
@@ -579,6 +928,9 @@ void AMikanCameraActor::PostInitializeComponents()
 
 		MikanClient->OnMikanDisconnected.AddDynamic(this, &AMikanCameraActor::HandleMikanDisconnected);
 		MikanClient->OnNewFrameEvent.AddDynamic(this, &AMikanCameraActor::HandleNewCameraFrame);
+		MikanClient->OnCameraPropertiesEvent.AddDynamic(this, &AMikanCameraActor::HandleCameraProperties);
+		MikanClient->OnCompositorStarted.AddDynamic(this, &AMikanCameraActor::HandleCompositorStarted);
+		MikanClient->OnCompositorStopped.AddDynamic(this, &AMikanCameraActor::HandleCompositorStopped);
 	}
 }
 
@@ -617,6 +969,12 @@ void AMikanCameraActor::BindMikanComponentData(class UMikanComponentData* Data)
 {
 	Super::BindMikanComponentData(Data);
 
+	// The base class unbinds every subscription of ours on unbind
+	if (Data)
+	{
+		Data->OnComponentDataChanged.AddUObject(this, &AMikanCameraActor::HandleCameraDataChanged);
+	}
+
 	if (FrameCaptureActor)
 	{
 		FrameCaptureActor->NotifyMikanComponentDataBound();
@@ -646,6 +1004,9 @@ void AMikanCameraActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		MikanClient->OnMikanDisconnected.RemoveDynamic(this, &AMikanCameraActor::HandleMikanDisconnected);
 		MikanClient->OnNewFrameEvent.RemoveDynamic(this, &AMikanCameraActor::HandleNewCameraFrame);
+		MikanClient->OnCameraPropertiesEvent.RemoveDynamic(this, &AMikanCameraActor::HandleCameraProperties);
+		MikanClient->OnCompositorStarted.RemoveDynamic(this, &AMikanCameraActor::HandleCompositorStarted);
+		MikanClient->OnCompositorStopped.RemoveDynamic(this, &AMikanCameraActor::HandleCompositorStopped);
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -666,6 +1027,7 @@ void AMikanCameraActor::HandleMikanDisconnected()
 {
 	if (FrameCaptureActor)
 	{
+		FrameCaptureActor->HandleCompositorStopped();
 		FrameCaptureActor->FreeRenderBuffers();
 	}
 }
@@ -675,6 +1037,47 @@ void AMikanCameraActor::HandleNewCameraFrame(const FMikanCameraNewFrameEvent& Ne
 	if (NewFrameEvent.CameraID == GetCameraID() && FrameCaptureActor)
 	{
 		FrameCaptureActor->HandleNewCameraFrame(NewFrameEvent);
+	}
+}
+
+void AMikanCameraActor::HandleCameraProperties(const FMikanCameraNewFrameEvent& PropertiesEvent)
+{
+	if (PropertiesEvent.CameraID == GetCameraID() && FrameCaptureActor)
+	{
+		FrameCaptureActor->HandleCameraProperties(PropertiesEvent);
+	}
+}
+
+void AMikanCameraActor::HandleCompositorStarted(int32 CompositorId, int32 CameraId)
+{
+	if (CameraId == GetCameraID() && FrameCaptureActor)
+	{
+		FrameCaptureActor->HandleCompositorStarted();
+	}
+}
+
+void AMikanCameraActor::HandleCompositorStopped(int32 CompositorId, int32 CameraId)
+{
+	if (CameraId == GetCameraID() && FrameCaptureActor)
+	{
+		FrameCaptureActor->HandleCompositorStopped();
+	}
+}
+
+void AMikanCameraActor::HandleCameraDataChanged(const FString& FieldName)
+{
+	if (!FrameCaptureActor)
+	{
+		return;
+	}
+
+	if (FieldName == "frame_sync_mode" || FieldName == "pose_driven_per_frame")
+	{
+		FrameCaptureActor->HandleFrameSyncModeChanged();
+	}
+	else if (FieldName == "video_source_id")
+	{
+		FrameCaptureActor->HandleVideoSourceChanged();
 	}
 }
 
