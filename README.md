@@ -2,6 +2,8 @@
 
 Unreal Engine plugin for MikanXR. It connects the engine to a running Mikan editor over the MikanXR client API, mirrors the Mikan scene (anchors, stencils, shapes, cameras, lights, stages, scenes) as actors under an `AMikanClient`, publishes render targets back to the compositor, and relays DMX light data.
 
+Model stencil and model shape geometry is fetched as a GLB from the Mikan editor's HTTP server at each component's `geometry_url`, with the stencil's texture embedded, and decoded with the vendored [cgltf](https://github.com/jkuhlmann/cgltf) (`ThirdParty/cgltf`, MIT).
+
 ## Scenes
 
 A Mikan project can hold several scenes, including more than one on the same stage, and only one of them is current at a time. The plugin spawns actors for all of them and follows the editor's choice: the scene system's `current_scene_id` sets `AMikanClient`'s active scene, and every other scene's actor subtree is hidden. A hidden actor casts no shadow, which is the point, since an inactive scene's depth proxy mesh would otherwise shadow the live shot.
@@ -77,4 +79,4 @@ Client side:
 
 ## Publishing
 
-`PushToMikanXR_UE.bat` mirrors `Source`, `ThirdParty`, `Tools`, and this README into the standalone plugin repository checkout. `BindMikan.bat` and `FetchMikan.bat` pull the MikanXR client headers, libraries, and DLLs from a MikanXR distribution.
+`PushToMikanXR_UE.bat` mirrors `Source`, `ThirdParty`, `Tools`, and this README into the standalone plugin repository checkout. `BindMikan.bat` and `FetchMikan.bat` pull the MikanXR client headers, import libraries, and DLLs from a MikanXR client SDK: `dist/ClientSDK/Win64` in a MikanXR checkout after its `INSTALL_CLIENT_SDK` target, or an unpacked `ClientSDK` zip from a MikanXR release. `BindMikan.bat` records that folder in `SetMikanVars_x64.bat` and runs the fetch.

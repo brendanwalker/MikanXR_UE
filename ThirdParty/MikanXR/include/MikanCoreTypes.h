@@ -93,7 +93,7 @@ enum ENUM(Serialization::CodeGenModule("MikanCoreConstants")) MikanColorBufferTy
 
 enum ENUM(Serialization::CodeGenModule("MikanCoreConstants")) MikanDepthBufferType
 {
-	MikanDepthBuffer_NODEPTH ENUMVALUE_STRING("NOCOLOR"),
+	MikanDepthBuffer_NODEPTH ENUMVALUE_STRING("NODEPTH"),
 	// Raw float non-linear depth values from the z-buffer (in source world units)
 	MikanDepthBuffer_FLOAT_DEVICE_DEPTH ENUMVALUE_STRING("FLOAT_DEVICE_DEPTH"),
 	// Linearized float distance-from-camera values (in source world units)
@@ -130,8 +130,12 @@ struct MIKAN_CORE_API STRUCT(Serialization::CodeGenModule("MikanCoreTypes")) Mik
 	FIELD() MikanColorBufferType color_buffer_type= MikanColorBufferType::MikanColorBuffer_NOCOLOR;
 	FIELD() MikanDepthBufferType depth_buffer_type= MikanDepthBufferType::MikanDepthBuffer_NODEPTH;
 	FIELD() MikanShadowBufferType shadow_buffer_type= MikanShadowBufferType::MikanShadowBuffer_NOSHADOW;
+	/// Size of the color buffer
 	FIELD() uint32_t width= 0;
 	FIELD() uint32_t height= 0;
+	/// Size of the depth and shadow buffers. 0 means same as width/height.
+	FIELD() uint32_t aux_width= 0;
+	FIELD() uint32_t aux_height= 0;
 	FIELD() MikanClientGraphicsApi graphicsAPI= MikanClientGraphicsApi_UNKNOWN;
 
 #ifdef MIKANCORE_REFLECTION_ENABLED
@@ -150,9 +154,6 @@ typedef int MikanCameraID;
 /// Registered text response callback function for a Mikan request
 typedef void(MIKAN_CALLBACK* MikanTextResponseCallback)(MikanRequestID request_id, const char* utf8_response_string,
 														void* userdata);
-
-/// Registered binary response callback function for a Mikan request
-typedef void(MIKAN_CALLBACK* MikanBinaryResponseCallback)(const uint8_t* buffer, size_t buffer_size, void* userdata);
 
 typedef void(MIKAN_CALLBACK* MikanLogCallback)(int /*log_level*/, const char* /*log_message*/);
 

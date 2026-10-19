@@ -20,8 +20,14 @@ struct FMikanCameraNewFrameEvent
 	float NearClippingPlaneUU= 0.f;
 	float FarClippingPlaneUU= 0.f;
 	float HorizontalFOVDegrees;
+	// Size of the color buffer to render. Above the video resolution when the camera asks
+	// for a supersample, which is why this is not the size of the video frame.
 	int FrameWidth= 0;
 	int FrameHeight= 0;
+	// Size of the depth and shadow buffers to render, scaled independently of the color
+	// buffer. The projection matrix is shared, so only the target size differs.
+	int AuxWidth= 0;
+	int AuxHeight= 0;
 	int64_t FrameIndex= 0;
 };
 
@@ -97,6 +103,11 @@ public:
 		UnrealEvent.HorizontalFOVDegrees= HorizontalFOVDegrees;
 		UnrealEvent.FrameWidth= CameraEvent.pixel_size.x;
 		UnrealEvent.FrameHeight= CameraEvent.pixel_size.y;
+		// An editor that predates the aux size leaves it zero, so fall back to the color size
+		UnrealEvent.AuxWidth=
+			CameraEvent.aux_pixel_size.x > 0 ? CameraEvent.aux_pixel_size.x : CameraEvent.pixel_size.x;
+		UnrealEvent.AuxHeight=
+			CameraEvent.aux_pixel_size.y > 0 ? CameraEvent.aux_pixel_size.y : CameraEvent.pixel_size.y;
 		UnrealEvent.FrameIndex= FrameIndex;
 
 		return UnrealEvent;
@@ -164,8 +175,8 @@ public:
 	// in-editor; the shadow capture renders this to produce the per-channel shadow (A/B) factor.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	class UMaterialInterface* ModelStencilShadowMaterial;
-	// Parent material for texturing a model stencil's placement mesh with its capture-frame
-	// texture (the sibling .png of model_path, written by Mikan's depth mesh capture). Needs a
+	// Parent material for texturing a model stencil's placement mesh with the texture embedded in
+	// its geometry GLB (a depth proxy's captured frame or an occlusion mesh's atlas). Needs a
 	// Texture parameter named "BaseTexture". Optional: when unset the placement mesh uses the
 	// color material as before.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)

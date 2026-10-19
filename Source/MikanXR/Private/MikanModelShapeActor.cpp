@@ -3,9 +3,9 @@
 #include "MikanAPI.h"
 #include "MikanClient.h"
 #include "MikanEngineSubsystem.h"
+#include "MikanGlbGeometry.h"
 #include "MikanMath.h"
 #include "MikanSceneActor.h"
-#include "MikanShapeRequests.h"
 #include "MikanShapeTypes.h"
 #include "MikanStencilTypes.h"
 #include "ProceduralMeshComponent.h"
@@ -19,6 +19,7 @@ void UMikanModelShapeData::Initialize(const Serialization::PolymorphicObjectPtr&
 
 	const auto* ModelShapeValues = InValuesObject.getTypedPointer<MikanModelShapeComponentValues>();
 	Mikan::ToUnrealString(ModelShapeValues->model_path, ModelPath);
+	Mikan::ToUnrealString(ModelShapeValues->geometry_url, GeometryUrl);
 }
 
 bool UMikanModelShapeData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
@@ -26,6 +27,11 @@ bool UMikanModelShapeData::ApplyMikanValue(const FString& FieldName, const Mikan
 	if (FieldName == "model_path")
 	{
 		Mikan::ToUnrealString(FieldValue, ModelPath);
+		return true;
+	}
+	else if (FieldName == "geometry_url")
+	{
+		Mikan::ToUnrealString(FieldValue, GeometryUrl);
 		return true;
 	}
 	else
@@ -38,6 +44,7 @@ void UMikanModelShapeData::Describe(TArray<FString>& OutLines) const
 {
 	UMikanShapeData::Describe(OutLines);
 	Mikan::AppendDescribeLine(OutLines, TEXT("model_path"), ModelPath);
+	Mikan::AppendDescribeLine(OutLines, TEXT("geometry_url"), GeometryUrl);
 }
 
 // -- AMikanModelShapeActor -----
@@ -66,25 +73,22 @@ void AMikanModelShapeActor::Tick(float DeltaSeconds)
 
 void AMikanModelShapeActor::RefetchModelRenderGeometry()
 {
-	UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get();
-	if (!Subsystem)
+	// Supersede any in-flight fetch (e.g. a rapid model_path change) so a stale response can't
+	// clobber the newer geometry.
+	MikanGlbGeometry::CancelFetch(PendingGeometryRequest);
+
+	auto* ShapeData = Cast<UMikanModelShapeData>(GetTransformData());
+	const FString Url = ShapeData != nullptr ? MikanGlbGeometry::MakeGeometryUrl(ShapeData->GetGeometryUrl()) : FString();
+	if (Url.IsEmpty())
 	{
 		return;
 	}
 
-	// Supersede any in-flight fetch (e.g. a rapid model_path change) so a stale response can't
-	// clobber the newer geometry.
-	Subsystem->CancelRequest(PendingGeometryRequestHandle);
-	PendingGeometryRequestHandle = 0;
-
-	GetModelShapeRenderGeometry request;
-	request.shapeId = GetTransformId();
-
 	// Capture a weak pointer, never a raw this: the response can arrive after the actor is gone.
 	TWeakObjectPtr<AMikanModelShapeActor> WeakThis(this);
-	PendingGeometryRequestHandle = Subsystem->SendRequestAsync(
-		request,
-		[WeakThis](const MikanResponsePtr& Response)
+	PendingGeometryRequest = MikanGlbGeometry::FetchGeometry(
+		Url,
+		[WeakThis](bool bSuccess, const FMikanGlbGeometry& Geometry)
 		{
 			AMikanModelShapeActor* Self = WeakThis.Get();
 			if (!Self)
@@ -92,52 +96,49 @@ void AMikanModelShapeActor::RefetchModelRenderGeometry()
 				return;
 			}
 
-			Self->PendingGeometryRequestHandle = 0;
-			if (Response->resultCode == MikanAPIResult::Success)
+			Self->PendingGeometryRequest.Reset();
+			if (bSuccess)
 			{
-				auto MeshResponse = std::static_pointer_cast<MikanShapeModelRenderGeometryResponse>(Response);
-				Self->ApplyModelRenderGeometry(MeshResponse->render_geometry);
+				Self->ApplyModelRenderGeometry(Geometry);
 			}
 		});
 }
 
 void AMikanModelShapeActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get())
-	{
-		Subsystem->CancelRequest(PendingGeometryRequestHandle);
-	}
-	PendingGeometryRequestHandle = 0;
+	MikanGlbGeometry::CancelFetch(PendingGeometryRequest);
 
 	Super::EndPlay(EndPlayReason);
 }
 
-void AMikanModelShapeActor::ApplyModelRenderGeometry(const MikanStencilModelRenderGeometry& InModelInfo)
+void AMikanModelShapeActor::ApplyModelRenderGeometry(const FMikanGlbGeometry& Geometry)
 {
 	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
 
 	ColorMeshComponent->ClearAllMeshSections();
 	DepthMeshComponent->ClearAllMeshSections();
 
-	for (int32 SectionIndex = 0; SectionIndex < (int)InModelInfo.meshes.size(); ++SectionIndex)
+	for (int32 SectionIndex = 0; SectionIndex < Geometry.Meshes.Num(); ++SectionIndex)
 	{
-		const MikanTriagulatedMesh& meshData = InModelInfo.meshes[SectionIndex];
+		const FMikanGlbMesh& meshData = Geometry.Meshes[SectionIndex];
 
 		TArray<FVector> UE4DepthVertices;
 		TArray<FVector> UE4ColorVertices;
-		UE4DepthVertices.SetNumUninitialized(meshData.vertices.size());
-		UE4ColorVertices.SetNumUninitialized(meshData.vertices.size());
-		for (int32 i = 0; i < (int32)meshData.vertices.size(); ++i)
+		UE4DepthVertices.SetNumUninitialized(meshData.Positions.Num());
+		UE4ColorVertices.SetNumUninitialized(meshData.Positions.Num());
+		for (int32 i = 0; i < meshData.Positions.Num(); ++i)
 		{
-			UE4DepthVertices[i] = FMikanMath::MikanVector3fToFVector(meshData.vertices[i]) * MetersToUU;
+			const FVector3f& Position = meshData.Positions[i];
+			UE4DepthVertices[i] = FMikanMath::MikanVector3fToFVector({Position.X, Position.Y, Position.Z}) * MetersToUU;
 			UE4ColorVertices[i] = UE4DepthVertices[i];
 		}
 
 		TArray<FVector> UE4Normals;
-		UE4Normals.SetNumUninitialized(meshData.normals.size());
-		for (int32 i = 0; i < (int32)meshData.normals.size(); ++i)
+		UE4Normals.SetNumUninitialized(meshData.Normals.Num());
+		for (int32 i = 0; i < meshData.Normals.Num(); ++i)
 		{
-			UE4Normals[i] = FMikanMath::MikanVector3fToFVector(meshData.normals[i]);
+			const FVector3f& Normal = meshData.Normals[i];
+			UE4Normals[i] = FMikanMath::MikanVector3fToFVector({Normal.X, Normal.Y, Normal.Z});
 		}
 
 		if (UE4ColorVertices.Num() == UE4Normals.Num())
@@ -148,18 +149,19 @@ void AMikanModelShapeActor::ApplyModelRenderGeometry(const MikanStencilModelRend
 			}
 		}
 
+		// glTF stores V-down, which is how Unreal samples, so UVs pass through
 		TArray<FVector2D> UE4Texels;
-		UE4Texels.SetNumUninitialized(meshData.texels.size());
-		for (int32 i = 0; i < (int32)meshData.texels.size(); ++i)
+		UE4Texels.SetNumUninitialized(meshData.UVs.Num());
+		for (int32 i = 0; i < meshData.UVs.Num(); ++i)
 		{
-			UE4Texels[i] = FMikanMath::MikanVector2fToFVector2D(meshData.texels[i]);
+			UE4Texels[i] = FVector2D(meshData.UVs[i]);
 		}
 
 		TArray<int32> UE4Triangles;
-		UE4Triangles.SetNumUninitialized(meshData.indices.size());
-		for (int32 i = 0; i < (int32)meshData.indices.size(); ++i)
+		UE4Triangles.SetNumUninitialized(meshData.Indices.Num());
+		for (int32 i = 0; i < meshData.Indices.Num(); ++i)
 		{
-			UE4Triangles[i] = meshData.indices[i];
+			UE4Triangles[i] = (int32)meshData.Indices[i];
 		}
 
 		ColorMeshComponent->CreateMeshSection(
@@ -218,7 +220,9 @@ void AMikanModelShapeActor::BindMikanComponentData(class UMikanComponentData* Da
 
 void AMikanModelShapeActor::OnComponentDataChanged(const FString& FieldName)
 {
-	if (FieldName == "model_path")
+	// geometry_url changes after the editor has reloaded the model, so it is the field that means
+	// the geometry moved
+	if (FieldName == "geometry_url")
 	{
 		RefetchModelRenderGeometry();
 	}

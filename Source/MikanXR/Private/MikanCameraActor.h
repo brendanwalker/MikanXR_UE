@@ -141,7 +141,7 @@ public:
 
 protected:
 	void SetDepthClippingPlanes(float InNearClippingPlaneUU, float InFarClippingPlaneUU);
-	bool EnsureRenderBuffers(int FrameBufferWidth, int FrameBufferHeight);
+	bool EnsureRenderBuffers(int FrameBufferWidth, int FrameBufferHeight, int AuxBufferWidth, int AuxBufferHeight);
 	bool RecreateRenderTargets(const MikanRenderTargetDescriptor& DesiredRenderTargetDesc);
 	void DisposeRenderTargets();
 

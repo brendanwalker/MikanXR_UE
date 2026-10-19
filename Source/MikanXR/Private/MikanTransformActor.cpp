@@ -153,8 +153,10 @@ void AMikanTransformActor::OnMikanComponentNameChanged()
 	// Update the in world label
 	LabelComponent->SetText(FText::FromString(ComponentName));
 	
+#if WITH_EDITOR
 	// Also update the editor hierarchy view label
 	SetActorLabel(ComponentName);
+#endif
 }
 
 void AMikanTransformActor::OnMikanTransformDataChanged()

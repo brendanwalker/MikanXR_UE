@@ -40,7 +40,7 @@ public:
 
 	virtual void Destroyed() override;
 
-	inline class AMikanClient* GetOwnerMikanClient() const;
+	class AMikanClient* GetOwnerMikanClient() const;
 	inline FString GetTransformName() const { return TransformData ? TransformData->GetComponentName() : FString(); }
 	inline MikanTransformID GetTransformId() const { return TransformData ? TransformData->GetComponentId() : -1; }
 	inline UMikanTransformData* GetTransformData() const { return TransformData; }

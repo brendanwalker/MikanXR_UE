@@ -4,6 +4,7 @@
 #include "MikanTransformActor.h"
 #include "MikanStencilActor.h"
 #include "MikanStencilTypes.h"
+#include "Interfaces/IHttpRequest.h"
 #include "MikanModelStencilActor.generated.h"
 
 UCLASS()
@@ -19,9 +20,11 @@ public:
 	virtual void Describe(TArray<FString>& OutLines) const override;
 
 	inline const FString& GetModelPath() const { return ModelPath; }
+	inline const FString& GetGeometryUrl() const { return GeometryUrl; }
 
 private:
 	FString ModelPath;
+	FString GeometryUrl;
 };
 
 UCLASS(BlueprintType, Blueprintable)
@@ -77,10 +80,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	class UMaterialInterface* ShadowMaterial;
 
-	// Parent material for texturing the placement mesh with the stencil's capture-frame texture
-	// (the sibling .png of model_path, written by Mikan's depth mesh capture). Needs a Texture
-	// parameter named "BaseTexture". When unset, or when no sibling texture exists, the placement
-	// mesh uses ColorMaterial as before. Not defaulted to a /Game/ asset - the plugin is shared
+	// Parent material for texturing the placement mesh with the stencil's own texture (the captured
+	// frame of a depth proxy or the atlas of an occlusion mesh), which arrives embedded in the
+	// stencil's geometry GLB. Needs a Texture parameter named "BaseTexture". When unset, or when the
+	// geometry carries no texture, the placement mesh uses ColorMaterial. Not defaulted to a /Game/ asset - the plugin is shared
 	// across projects (same reasoning as the light environment's skydome material).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	class UMaterialInterface* TexturedPlacementMaterial;
@@ -96,12 +99,12 @@ public:
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	void ApplyModelRenderGeometry(const MikanStencilModelRenderGeometry& InModelInfo);
+	void ApplyModelRenderGeometry(const struct FMikanGlbGeometry& Geometry);
 	void RefetchModelRenderGeometry();
 
 	// Builds one transient UStaticMesh from the fetched geometry, one section per incoming mesh.
 	// Returns null when the geometry has no usable triangles.
-	class UStaticMesh* BuildStaticMeshFromRenderGeometry(const MikanStencilModelRenderGeometry& InModelInfo);
+	class UStaticMesh* BuildStaticMeshFromRenderGeometry(const struct FMikanGlbGeometry& Geometry);
 
 	// Points one pass's component at StencilMesh and overrides every section with Material. A null
 	// Material leaves the mesh's own materials in place, which is what the holdout occluder wants.
@@ -110,16 +113,11 @@ protected:
 
 	virtual void OnComponentDataChanged(const FString& FieldName) override;
 
-	// Loads the sibling .png of model_path into PlacementTexture, if one exists. The stencil is
-	// created by the Mikan editor on the same machine (frame delivery already relies on shared
-	// texture memory), so the server-side path is readable here.
-	void TryLoadPlacementTexture();
+	// The in-flight geometry GLB fetch, if any. Superseded when geometry_url changes again and
+	// cancelled on EndPlay.
+	TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> PendingGeometryRequest;
 
-	// Handle of the in-flight async render-geometry fetch (0 when none). Used to supersede a stale
-	// fetch when model_path changes again and to cancel on EndPlay.
-	uint64 PendingGeometryRequestHandle = 0;
-
-	// Capture-frame texture loaded from the sibling .png of model_path, if any.
+	// The first textured mesh's base colour texture from the geometry GLB, if any.
 	UPROPERTY(Transient)
 	class UTexture2D* PlacementTexture = nullptr;
 

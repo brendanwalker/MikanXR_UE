@@ -51,6 +51,8 @@ public class MikanXR : ModuleRules
 
 		PrivateIncludePaths.Add("MikanXR/Private");
 		PrivateIncludePaths.Add(Path.Combine(ThirdPartyPath, "MikanXR", "include"));
+		// cgltf decodes the model geometry GLBs the editor serves; header-only, implemented once in MikanGlbGeometry.cpp
+		PrivateIncludePaths.Add(Path.Combine(ThirdPartyPath, "cgltf"));
 
 		PublicDependencyModuleNames.AddRange(
 			new string[]
@@ -71,7 +73,9 @@ public class MikanXR : ModuleRules
 				// shape actor still uses ProceduralMeshComponent.
 				"MeshDescription",
 				"StaticMeshDescription",
-				"ProceduralMeshComponent"
+				"ProceduralMeshComponent",
+				// Model geometry is fetched as a GLB from the editor's HTTP server
+				"HTTP"
 			}
 		);
 
@@ -85,13 +89,10 @@ public class MikanXR : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			// Add the import libraries
+			// Add the import libraries of the DLLs the SDK headers export from
 			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanClientAPI.lib"));
 			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanClientCore.lib"));
-			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanCoreApp.lib"));
 			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanSerialization.lib"));
-			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanSharedTexture.lib"));
-			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, PlatformString, "MikanUtility.lib"));
 
 			// Copy MikanCore to project binaries dir
 			string MikanCoreDLLPath = Path.Combine(BinariesPath, PlatformString, "MikanClientCore.dll");
@@ -139,15 +140,15 @@ public class MikanXR : ModuleRules
             System.Console.WriteLine("Using GLEW DLL: " + GLEWProjectDLLPath);
 
             // Ensure that the DLL is staged along with the executable
-            RuntimeDependencies.Add("$(TargetOutputDir)/MikanClientCore.dll", MikanProjectCoreDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/MikanClientAPI.dll", MikanProjectApiDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/MikanCoreApp.dll", MikanProjectCoreAppDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/MikanSerialization.dll", MikanProjectSerializationDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/MikanSharedTexture.dll", MikanProjectSharedTextureDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/MikanUtility.dll", MikanProjectUtilityDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/Refureku.dll", RefurekuProjectDLLPath);
-			RuntimeDependencies.Add("$(TargetOutputDir)/SpoutLibrary.dll", SpoutProjectDLLPath);
-            RuntimeDependencies.Add("$(TargetOutputDir)/glew32.dll", GLEWProjectDLLPath);
+            RuntimeDependencies.Add("$(TargetOutputDir)/MikanClientCore.dll", MikanCoreDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanClientAPI.dll", MikanApiDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanCoreApp.dll", MikanCoreAppDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanSerialization.dll", MikanSerializationDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanSharedTexture.dll", MikanSharedTextureDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/MikanUtility.dll", MikanUtilityDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/Refureku.dll", RefurekuDLLPath);
+			RuntimeDependencies.Add("$(TargetOutputDir)/SpoutLibrary.dll", SpoutDLLPath);
+            RuntimeDependencies.Add("$(TargetOutputDir)/glew32.dll", GLEWDLLPath);
 
             isLibrarySupported = true;
 		}

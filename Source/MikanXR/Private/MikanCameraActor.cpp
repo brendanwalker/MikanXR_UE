@@ -241,7 +241,7 @@ void AMikanFrameCaptureActor::Tick(float DeltaSeconds)
 		}
 
 		const FMikanCameraNewFrameEvent& FrameEvent = PendingFrameEvents[0];
-		if (!EnsureRenderBuffers(FrameEvent.FrameWidth, FrameEvent.FrameHeight))
+		if (!EnsureRenderBuffers(FrameEvent.FrameWidth, FrameEvent.FrameHeight, FrameEvent.AuxWidth, FrameEvent.AuxHeight))
 		{
 			return;
 		}
@@ -268,7 +268,8 @@ void AMikanFrameCaptureActor::Tick(float DeltaSeconds)
 			return;
 		}
 
-		if (!EnsureRenderBuffers(LatestCameraState.FrameWidth, LatestCameraState.FrameHeight))
+		if (!EnsureRenderBuffers(LatestCameraState.FrameWidth, LatestCameraState.FrameHeight,
+								 LatestCameraState.AuxWidth, LatestCameraState.AuxHeight))
 		{
 			return;
 		}
@@ -657,7 +658,7 @@ void AMikanFrameCaptureActor::FreeRenderBuffers()
 	DisposeRenderTargets();
 }
 
-bool AMikanFrameCaptureActor::EnsureRenderBuffers(int FrameBufferWidth, int FrameBufferHeight)
+bool AMikanFrameCaptureActor::EnsureRenderBuffers(int FrameBufferWidth, int FrameBufferHeight, int AuxBufferWidth, int AuxBufferHeight)
 {
 	MikanClientGraphicsApi api = ClientInfo.graphicsAPI;
 	if (api != MikanClientGraphicsApi_Direct3D9 &&
@@ -668,7 +669,8 @@ bool AMikanFrameCaptureActor::EnsureRenderBuffers(int FrameBufferWidth, int Fram
 		return false;
 	}
 
-	if (RenderTargetDesc.width == FrameBufferWidth && RenderTargetDesc.height == FrameBufferHeight)
+	if (RenderTargetDesc.width == FrameBufferWidth && RenderTargetDesc.height == FrameBufferHeight &&
+		RenderTargetDesc.aux_width == AuxBufferWidth && RenderTargetDesc.aux_height == AuxBufferHeight)
 	{
 		// Buffers already match the requested size — ready to capture this frame.
 		return true;
@@ -694,6 +696,10 @@ bool AMikanFrameCaptureActor::EnsureRenderBuffers(int FrameBufferWidth, int Fram
 	MikanRenderTargetDescriptor DesiredRenderTargetDesc= {};
 	DesiredRenderTargetDesc.width = (uint32_t)FrameBufferWidth;
 	DesiredRenderTargetDesc.height = (uint32_t)FrameBufferHeight;
+	// The depth and shadow buffers carry their own size so Mikan allocates its texture ring
+	// to match rather than resizing on the first frame it receives.
+	DesiredRenderTargetDesc.aux_width = (uint32_t)AuxBufferWidth;
+	DesiredRenderTargetDesc.aux_height = (uint32_t)AuxBufferHeight;
 	// RGBA16F half-float preserves the HDR (SCS_SceneColorHDR) values that RTF_RGBA8 truncated.
 	DesiredRenderTargetDesc.color_buffer_type = MikanColorBuffer_RGBA16F;
 	// Depth is opt-in (bEnableDepthCapture). When off, the color capture bakes environment
@@ -746,6 +752,13 @@ bool AMikanFrameCaptureActor::RecreateRenderTargets(const MikanRenderTargetDescr
 
 	check(DesiredRenderTargetDesc.color_buffer_type == MikanColorBuffer_RGBA16F);
 
+	// The depth and shadow passes render the same projection into their own target size,
+	// so a camera can supersample the color silhouette without paying for it three more times.
+	const uint32_t AuxWidth =
+		DesiredRenderTargetDesc.aux_width > 0 ? DesiredRenderTargetDesc.aux_width : DesiredRenderTargetDesc.width;
+	const uint32_t AuxHeight =
+		DesiredRenderTargetDesc.aux_height > 0 ? DesiredRenderTargetDesc.aux_height : DesiredRenderTargetDesc.height;
+
 	ColorRenderTarget = UKismetRenderingLibrary::CreateRenderTarget2D(
 		this,
 		DesiredRenderTargetDesc.width,
@@ -768,10 +781,10 @@ bool AMikanFrameCaptureActor::RecreateRenderTargets(const MikanRenderTargetDescr
 	if (DesiredRenderTargetDesc.depth_buffer_type == MikanDepthBuffer_FLOAT_SCENE_DEPTH && DepthCaptureComponent != nullptr)
 	{
 		DepthRenderTarget = UKismetRenderingLibrary::CreateRenderTarget2D(
-			this, 
-			DesiredRenderTargetDesc.width,
-			DesiredRenderTargetDesc.height,
-			RTF_R32f, 
+			this,
+			AuxWidth,
+			AuxHeight,
+			RTF_R32f,
 			FLinearColor::Transparent, 
 			false);
 		if (DepthRenderTarget != nullptr)
@@ -788,8 +801,8 @@ bool AMikanFrameCaptureActor::RecreateRenderTargets(const MikanRenderTargetDescr
 
 	if (DesiredRenderTargetDesc.shadow_buffer_type != MikanShadowBuffer_NOSHADOW)
 	{
-		const uint32_t W= DesiredRenderTargetDesc.width;
-		const uint32_t H= DesiredRenderTargetDesc.height;
+		const uint32_t W= AuxWidth;
+		const uint32_t H= AuxHeight;
 
 		// A and B intermediates capture the white catcher (shadowed / reference). They are lit
 		// scene captures, so HDR float gives the divide clean headroom before it is normalized.

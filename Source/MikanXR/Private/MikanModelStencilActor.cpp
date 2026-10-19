@@ -4,21 +4,19 @@
 #include "MikanCaptureComponent.h"
 #include "MikanClient.h"
 #include "MikanEngineSubsystem.h"
+#include "MikanGlbGeometry.h"
 #include "MikanMath.h"
 #include "MikanRenderableComponent.h"
 #include "MikanSceneActor.h"
-#include "MikanStencilRequests.h"
 #include "MikanStencilTypes.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/WorldSettings.h"
 #include "DrawDebugHelpers.h"
-#include "ImageUtils.h"
 #include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "MeshDescription.h"
-#include "Misc/Paths.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "StaticMeshAttributes.h"
 
@@ -29,6 +27,7 @@ void UMikanModelStencilData::Initialize(const Serialization::PolymorphicObjectPt
 
 	const auto* ModelStencilValues = InValuesObject.getTypedPointer<MikanModelStencilComponentValues>();
 	Mikan::ToUnrealString(ModelStencilValues->model_path, ModelPath);
+	Mikan::ToUnrealString(ModelStencilValues->geometry_url, GeometryUrl);
 }
 
 bool UMikanModelStencilData::ApplyMikanValue(const FString& FieldName, const MikanVariant& FieldValue)
@@ -36,6 +35,11 @@ bool UMikanModelStencilData::ApplyMikanValue(const FString& FieldName, const Mik
 	if (FieldName == "model_path")
 	{
 		Mikan::ToUnrealString(FieldValue, ModelPath);
+		return true;
+	}
+	else if (FieldName == "geometry_url")
+	{
+		Mikan::ToUnrealString(FieldValue, GeometryUrl);
 		return true;
 	}
 	else
@@ -48,6 +52,7 @@ void UMikanModelStencilData::Describe(TArray<FString>& OutLines) const
 {
 	UMikanStencilData::Describe(OutLines);
 	Mikan::AppendDescribeLine(OutLines, TEXT("model_path"), ModelPath);
+	Mikan::AppendDescribeLine(OutLines, TEXT("geometry_url"), GeometryUrl);
 }
 
 // -- AMikanModelStencilActor -----
@@ -134,25 +139,22 @@ void AMikanModelStencilActor::Tick(float DeltaSeconds)
 
 void AMikanModelStencilActor::RefetchModelRenderGeometry()
 {
-	UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get();
-	if (!Subsystem)
+	// Supersede any in-flight fetch (e.g. a rapid model_path change) so a stale response can't
+	// clobber the newer geometry.
+	MikanGlbGeometry::CancelFetch(PendingGeometryRequest);
+
+	auto* StencilData = Cast<UMikanModelStencilData>(GetTransformData());
+	const FString Url = StencilData != nullptr ? MikanGlbGeometry::MakeGeometryUrl(StencilData->GetGeometryUrl()) : FString();
+	if (Url.IsEmpty())
 	{
 		return;
 	}
 
-	// Supersede any in-flight fetch (e.g. a rapid model_path change) so a stale response can't
-	// clobber the newer geometry.
-	Subsystem->CancelRequest(PendingGeometryRequestHandle);
-	PendingGeometryRequestHandle = 0;
-
-	GetModelStencilRenderGeometry request;
-	request.stencilId = GetTransformId();
-
 	// Capture a weak pointer, never a raw this: the response can arrive after the actor is gone.
 	TWeakObjectPtr<AMikanModelStencilActor> WeakThis(this);
-	PendingGeometryRequestHandle = Subsystem->SendRequestAsync(
-		request,
-		[WeakThis](const MikanResponsePtr& Response)
+	PendingGeometryRequest = MikanGlbGeometry::FetchGeometry(
+		Url,
+		[WeakThis](bool bSuccess, const FMikanGlbGeometry& Geometry)
 		{
 			AMikanModelStencilActor* Self = WeakThis.Get();
 			if (!Self)
@@ -160,47 +162,19 @@ void AMikanModelStencilActor::RefetchModelRenderGeometry()
 				return;
 			}
 
-			Self->PendingGeometryRequestHandle = 0;
-			if (Response->resultCode == MikanAPIResult::Success)
+			Self->PendingGeometryRequest.Reset();
+			if (bSuccess)
 			{
-				auto MeshResponse = std::static_pointer_cast<MikanStencilModelRenderGeometryResponse>(Response);
-				Self->ApplyModelRenderGeometry(MeshResponse->render_geometry);
+				Self->ApplyModelRenderGeometry(Geometry);
 			}
 		});
 }
 
 void AMikanModelStencilActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UMikanEngineSubsystem* Subsystem = UMikanEngineSubsystem::Get())
-	{
-		Subsystem->CancelRequest(PendingGeometryRequestHandle);
-	}
-	PendingGeometryRequestHandle = 0;
+	MikanGlbGeometry::CancelFetch(PendingGeometryRequest);
 
 	Super::EndPlay(EndPlayReason);
-}
-
-void AMikanModelStencilActor::TryLoadPlacementTexture()
-{
-	PlacementTexture = nullptr;
-
-	auto* StencilData = Cast<UMikanModelStencilData>(GetTransformData());
-	if (StencilData == nullptr || StencilData->GetModelPath().IsEmpty())
-	{
-		return;
-	}
-
-	const FString TexturePath = FPaths::ChangeExtension(StencilData->GetModelPath(), TEXT("png"));
-	if (!FPaths::FileExists(TexturePath))
-	{
-		return;
-	}
-
-	PlacementTexture = FImageUtils::ImportFileAsTexture2D(TexturePath);
-	if (PlacementTexture == nullptr)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("MikanModelStencilActor: failed to load placement texture %s"), *TexturePath);
-	}
 }
 
 namespace
@@ -219,8 +193,7 @@ FVector3f MakeTangentForNormal(const FVector3f& Normal)
 }
 } // namespace
 
-UStaticMesh* AMikanModelStencilActor::BuildStaticMeshFromRenderGeometry(
-	const MikanStencilModelRenderGeometry& InModelInfo)
+UStaticMesh* AMikanModelStencilActor::BuildStaticMeshFromRenderGeometry(const FMikanGlbGeometry& Geometry)
 {
 	const float MetersToUU = GetWorld()->GetWorldSettings()->WorldToMeters;
 
@@ -238,11 +211,11 @@ UStaticMesh* AMikanModelStencilActor::BuildStaticMeshFromRenderGeometry(
 
 	TArray<FStaticMaterial> StaticMaterials;
 
-	for (int32 SectionIndex = 0; SectionIndex < (int32)InModelInfo.meshes.size(); ++SectionIndex)
+	for (int32 SectionIndex = 0; SectionIndex < Geometry.Meshes.Num(); ++SectionIndex)
 	{
-		const MikanTriagulatedMesh& MeshData = InModelInfo.meshes[SectionIndex];
-		const int32 VertexCount = (int32)MeshData.vertices.size();
-		const int32 IndexCount = (int32)MeshData.indices.size();
+		const FMikanGlbMesh& MeshData = Geometry.Meshes[SectionIndex];
+		const int32 VertexCount = MeshData.Positions.Num();
+		const int32 IndexCount = MeshData.Indices.Num();
 		if (VertexCount == 0 || IndexCount < 3)
 		{
 			continue;
@@ -253,30 +226,35 @@ UStaticMesh* AMikanModelStencilActor::BuildStaticMeshFromRenderGeometry(
 		const FPolygonGroupID PolygonGroupID = MeshDescription.CreatePolygonGroup();
 		const FName MaterialSlotName = *FString::Printf(TEXT("Section%d"), SectionIndex);
 		MaterialSlotNames[PolygonGroupID] = MaterialSlotName;
+#if WITH_EDITORONLY_DATA
 		StaticMaterials.Add(
 			FStaticMaterial(UMaterial::GetDefaultMaterial(MD_Surface), MaterialSlotName, MaterialSlotName));
+#else
+		StaticMaterials.Add(FStaticMaterial(UMaterial::GetDefaultMaterial(MD_Surface), MaterialSlotName));
+#endif
 
 		TArray<FVertexID> VertexIDs;
 		VertexIDs.Reserve(VertexCount);
 		for (int32 i = 0; i < VertexCount; ++i)
 		{
 			const FVertexID VertexID = MeshDescription.CreateVertex();
-			VertexPositions[VertexID] =
-				(FVector3f)(FMikanMath::MikanVector3fToFVector(MeshData.vertices[i]) * MetersToUU);
+			VertexPositions[VertexID] = (FVector3f)(FMikanMath::MikanVector3fToFVector(
+															 {MeshData.Positions[i].X, MeshData.Positions[i].Y,
+															  MeshData.Positions[i].Z}) *
+														 MetersToUU);
 			VertexIDs.Add(VertexID);
 		}
 
-		const bool bHasNormals = (int32)MeshData.normals.size() == VertexCount;
-		const bool bHasTexels = (int32)MeshData.texels.size() == VertexCount;
+		const bool bHasNormals = MeshData.Normals.Num() == VertexCount;
+		const bool bHasUVs = MeshData.UVs.Num() == VertexCount;
 
 		for (int32 i = 0; i + 2 < IndexCount; i += 3)
 		{
 			// Reject the whole triangle before creating anything, so a bad index can't leave
 			// orphaned vertex instances behind in the description.
-			const int32 TriangleIndices[3] = {MeshData.indices[i], MeshData.indices[i + 1],
-											  MeshData.indices[i + 2]};
-			if (TriangleIndices[0] < 0 || TriangleIndices[0] >= VertexCount || TriangleIndices[1] < 0 ||
-				TriangleIndices[1] >= VertexCount || TriangleIndices[2] < 0 || TriangleIndices[2] >= VertexCount)
+			const uint32 TriangleIndices[3] = {MeshData.Indices[i], MeshData.Indices[i + 1], MeshData.Indices[i + 2]};
+			if (TriangleIndices[0] >= (uint32)VertexCount || TriangleIndices[1] >= (uint32)VertexCount ||
+				TriangleIndices[2] >= (uint32)VertexCount)
 			{
 				continue;
 			}
@@ -284,23 +262,20 @@ UStaticMesh* AMikanModelStencilActor::BuildStaticMeshFromRenderGeometry(
 			FVertexInstanceID Corners[3];
 			for (int32 Corner = 0; Corner < 3; ++Corner)
 			{
-				const int32 VertexIndex = TriangleIndices[Corner];
+				const int32 VertexIndex = (int32)TriangleIndices[Corner];
 				const FVertexInstanceID InstanceID = MeshDescription.CreateVertexInstance(VertexIDs[VertexIndex]);
 
+				const FVector3f& MikanNormal = bHasNormals ? MeshData.Normals[VertexIndex] : FVector3f::ZeroVector;
 				const FVector3f Normal =
-					bHasNormals ? (FVector3f)FMikanMath::MikanVector3fToFVector(MeshData.normals[VertexIndex])
-								: FVector3f(0.f, 0.f, 1.f);
+					bHasNormals
+						? (FVector3f)FMikanMath::MikanVector3fToFVector({MikanNormal.X, MikanNormal.Y, MikanNormal.Z})
+						: FVector3f(0.f, 0.f, 1.f);
 				InstanceNormals[InstanceID] = Normal;
 				InstanceTangents[InstanceID] = MakeTangentForNormal(Normal);
 				InstanceBinormalSigns[InstanceID] = 1.f;
 
-				// Mikan ships OBJ/GL-convention UVs (V=0 at the bottom); Unreal samples with V=0 at
-				// the top, so V is flipped here. Only material-sampled textures see this - the stock
-				// color/depth/shadow materials are untextured.
-				const FVector2f UV =
-					bHasTexels
-						? FVector2f(MeshData.texels[VertexIndex].x, 1.f - MeshData.texels[VertexIndex].y)
-						: FVector2f::ZeroVector;
+				// glTF stores V-down, which is how Unreal samples, so UVs pass through
+				const FVector2f UV = bHasUVs ? MeshData.UVs[VertexIndex] : FVector2f::ZeroVector;
 				InstanceUVs.Set(InstanceID, 0, UV);
 
 				Corners[Corner] = InstanceID;
@@ -367,17 +342,26 @@ void AMikanModelStencilActor::ApplyStencilMeshToComponent(UStaticMeshComponent* 
 	}
 }
 
-void AMikanModelStencilActor::ApplyModelRenderGeometry(const MikanStencilModelRenderGeometry& InModelInfo)
+void AMikanModelStencilActor::ApplyModelRenderGeometry(const FMikanGlbGeometry& Geometry)
 {
-	TryLoadPlacementTexture();
+	// The placement preview shows the first textured mesh's image. Depth proxy and occlusion mesh
+	// captures are one mesh with one texture.
+	PlacementTexture = nullptr;
+	for (const FMikanGlbMesh& Mesh : Geometry.Meshes)
+	{
+		if (Geometry.Images.IsValidIndex(Mesh.ImageIndex))
+		{
+			PlacementTexture = MikanGlbGeometry::CreateTexture(Geometry.Images[Mesh.ImageIndex]);
+			break;
+		}
+	}
 
-	StencilMesh = BuildStaticMeshFromRenderGeometry(InModelInfo);
+	StencilMesh = BuildStaticMeshFromRenderGeometry(Geometry);
 
 	const int32 SectionCount = StencilMesh != nullptr ? StencilMesh->GetStaticMaterials().Num() : 0;
 
-	// Prefer the capture-frame texture when the stencil has one (depth-mesh captures write it next
-	// to the .obj) and a textured parent material is assigned; otherwise fall back to the plain
-	// color material.
+	// Prefer the stencil's own texture when its geometry carries one and a textured parent material
+	// is assigned; otherwise fall back to the plain color material.
 	UMaterialInterface* PlacementMaterial = ColorMaterial;
 	if (PlacementTexture != nullptr && TexturedPlacementMaterial != nullptr)
 	{
@@ -429,7 +413,9 @@ void AMikanModelStencilActor::BindMikanComponentData(class UMikanComponentData* 
 
 void AMikanModelStencilActor::OnComponentDataChanged(const FString& FieldName)
 {
-	if (FieldName == "model_path")
+	// geometry_url changes after the editor has reloaded the model, and its etag query changes with
+	// the model or texture files, so it is the one field that means the geometry moved
+	if (FieldName == "geometry_url")
 	{
 		RefetchModelRenderGeometry();
 	}

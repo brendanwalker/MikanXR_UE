@@ -5,6 +5,7 @@
 #include "MikanShapeTypes.h"
 #include "MikanStencilTypes.h"
 #include "ProceduralMeshComponent.h"
+#include "Interfaces/IHttpRequest.h"
 #include "MikanModelShapeActor.generated.h"
 
 UCLASS()
@@ -20,9 +21,11 @@ public:
 	virtual void Describe(TArray<FString>& OutLines) const override;
 
 	inline const FString& GetModelPath() const { return ModelPath; }
+	inline const FString& GetGeometryUrl() const { return GeometryUrl; }
 
 private:
 	FString ModelPath;
+	FString GeometryUrl;
 };
 
 UCLASS(BlueprintType, Blueprintable)
@@ -54,12 +57,12 @@ public:
 
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	void ApplyModelRenderGeometry(const MikanStencilModelRenderGeometry& InModelInfo);
+	void ApplyModelRenderGeometry(const struct FMikanGlbGeometry& Geometry);
 	void RefetchModelRenderGeometry();
 
 	virtual void OnComponentDataChanged(const FString& FieldName) override;
 
-	// Handle of the in-flight async render-geometry fetch (0 when none). Used to supersede a stale
-	// fetch when model_path changes again and to cancel on EndPlay.
-	uint64 PendingGeometryRequestHandle = 0;
+	// The in-flight geometry GLB fetch, if any. Superseded when geometry_url changes again and
+	// cancelled on EndPlay.
+	TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> PendingGeometryRequest;
 };
